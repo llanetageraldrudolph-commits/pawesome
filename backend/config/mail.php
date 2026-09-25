@@ -53,6 +53,14 @@ return [
             'transport' => 'ses',
         ],
 
+        // HTTPS API transport — Railway Free/Trial/Hobby plans block outbound
+        // SMTP ports, so transactional mail must go over port 443.
+        'brevo' => [
+            'transport' => 'brevo',
+            'key' => env('BREVO_API_KEY'),
+            'domain' => env('BREVO_DOMAIN'),
+        ],
+
         'postmark' => [
             'transport' => 'postmark',
             // 'message_stream_id' => env('POSTMARK_MESSAGE_STREAM_ID'),
