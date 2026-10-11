@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\Appointment;
+use App\Models\Boarding;
 use App\Models\Customer;
 use App\Models\Grooming;
 use App\Models\Service;
@@ -16,6 +17,7 @@ use App\Services\FileStorageService;
 use App\Services\WorkflowNotifier;
 use App\Services\BookingAvailabilityService;
 use App\Services\PetServiceCompatibilityService;
+use App\Services\ServiceCatalog;
 use App\Services\ServiceDurationService;
 use App\Support\EmailContent;
 use Illuminate\Http\Request;
@@ -118,8 +120,8 @@ class ServiceRequestController extends Controller
         $validated = $request->validate([
             'customer_name' => 'required|string|max:150',
             'customer_email' => 'nullable|email|max:150',
-            'pet_id' => 'nullable|integer|exists:pets,id',
-            'pet_name' => 'required|string|max:150',
+            'pet_id' => 'required|integer|exists:pets,id',
+            'pet_name' => 'nullable|string|max:150',
             'pet_type' => 'nullable|string|max:50',
             'request_type' => 'required|string|max:150',
             'service_name' => 'nullable|string|max:150',
@@ -134,10 +136,12 @@ class ServiceRequestController extends Controller
         ]);
 
         $availabilityType = $this->normalizeServiceType($validated['request_type']);
-        $pet = null;
 
-        if (Auth::check() && !empty($validated['pet_id'])) {
-            $pet = Pet::with('customer')->find($validated['pet_id']);
+        // The selected pet is the authoritative identity — pet_name/pet_type
+        // sent by the client are ignored and re-derived from the record.
+        $pet = Pet::with('customer')->find($validated['pet_id']);
+
+        if (Auth::check()) {
             $customer = $pet?->customer;
             $user = Auth::user();
 
@@ -249,10 +253,19 @@ class ServiceRequestController extends Controller
             }
         }
 
+        // Fall back to the catalog bucket default so a generic or unmatched
+        // service name still carries a priced estimate (e.g. "Grooming").
+        if ($price === null) {
+            $price = ServiceCatalog::priceFor(
+                $validated['service_name'] ?? null,
+                ServiceCatalog::bucketFor($validated['request_type'] ?? null)
+            ) ?: null;
+        }
+
         $createData = [
             'request_type' => $validated['request_type'],
             'customer_name' => $validated['customer_name'],
-            'pet_name' => $validated['pet_name'],
+            'pet_name' => $pet->name,
             'service_name' => $validated['service_name'] ?? $validated['request_type'], // Use request_type as service_name fallback
             // Use requested_date/time as primary, fallback to preferred_date/time
             'request_date' => $validated['requested_date'],
@@ -276,14 +289,12 @@ class ServiceRequestController extends Controller
                 : ($validated['customer_email'] ?? null);
         }
 
-        if (Schema::hasColumn('service_requests', 'pet_id') && !empty($validated['pet_id'])) {
-            $createData['pet_id'] = $validated['pet_id'];
+        if (Schema::hasColumn('service_requests', 'pet_id')) {
+            $createData['pet_id'] = $pet->id;
         }
 
         if (Schema::hasColumn('service_requests', 'pet_type')) {
-            $createData['pet_type'] = $pet
-                ? ($pet->species ?? $pet->type)
-                : ($validated['pet_type'] ?? null);
+            $createData['pet_type'] = $pet->species ?? $pet->type;
         }
 
         // Add room data for hotel/boarding bookings
@@ -395,7 +406,10 @@ class ServiceRequestController extends Controller
                 }
 
                 if ($groomingCustomer && $groomingPet) {
-                    $price = $serviceRequest->price ?? 0;
+                    $price = (float) ($serviceRequest->price ?? 0);
+                    if ($price <= 0) {
+                        $price = ServiceCatalog::priceFor($validated['service_name'] ?? null, 'grooming');
+                    }
 
                     $groomingData = [
                         'customer_id' => $groomingCustomer->id,
@@ -551,10 +565,36 @@ class ServiceRequestController extends Controller
             ], 422);
         }
 
+        $cancelReason = trim((string) ($request->input('reason') ?: $request->input('cancellation_reason') ?: ''));
+
         $serviceRequest->update([
             'status' => 'cancelled',
             'payment_status' => 'unpaid',
+            'cancellation_reason' => $cancelReason !== '' ? $cancelReason : null,
         ]);
+
+        // Release linked dedicated records so their slots/rooms free up — the
+        // auto-created pending Grooming would otherwise block the time slot
+        // forever even though the request is cancelled.
+        $linkedCancel = ['status' => 'cancelled'];
+        if ($cancelReason !== '') {
+            $linkedCancel['cancellation_reason'] = $cancelReason;
+        }
+        if (Schema::hasColumn('appointments', 'service_request_id')) {
+            Appointment::where('service_request_id', $serviceRequest->id)
+                ->whereNotIn('status', ['completed', 'checked_out'])
+                ->update($linkedCancel);
+        }
+        if (Schema::hasColumn('groomings', 'service_request_id')) {
+            Grooming::where('service_request_id', $serviceRequest->id)
+                ->whereNotIn('status', ['completed'])
+                ->update($linkedCancel + ['payment_status' => 'unpaid']);
+        }
+        if (Schema::hasColumn('boardings', 'service_request_id')) {
+            Boarding::where('service_request_id', $serviceRequest->id)
+                ->whereNotIn('status', ['checked_out', 'completed'])
+                ->update($linkedCancel);
+        }
 
         // Cancel related room reservation if this is a hotel/boarding request
         if ($serviceRequest->request_type === 'hotel' || $serviceRequest->request_type === 'boarding') {
@@ -792,6 +832,35 @@ class ServiceRequestController extends Controller
             $serviceRequest->update($paymentData);
         }
 
+        // Keep the linked booking's payment state in step with the request —
+        // a resubmitted proof supersedes a prior rejection on either row.
+        $linkedTable = match (ServiceCatalog::bucketFor($serviceRequest->request_type ?? null)) {
+            'grooming' => 'groomings',
+            'hotel' => 'boardings',
+            'vet' => 'appointments',
+            default => null,
+        };
+        if ($linkedTable && Schema::hasColumn($linkedTable, 'service_request_id')) {
+            $linkedUpdates = ['payment_status' => 'pending'];
+            if (Schema::hasColumn($linkedTable, 'payment_method')) {
+                $linkedUpdates['payment_method'] = $validated['payment_method'];
+            }
+            if (Schema::hasColumn($linkedTable, 'payment_reference')) {
+                $linkedUpdates['payment_reference'] = $validated['payment_reference'] ?? null;
+            }
+            $freshProof = $serviceRequest->fresh()->payment_proof ?? null;
+            if (Schema::hasColumn($linkedTable, 'payment_proof') && $freshProof) {
+                $linkedUpdates['payment_proof'] = $freshProof;
+            }
+            if (Schema::hasColumn($linkedTable, 'updated_at')) {
+                $linkedUpdates['updated_at'] = now();
+            }
+            DB::table($linkedTable)
+                ->where('service_request_id', $serviceRequest->id)
+                ->where('payment_status', '!=', 'paid')
+                ->update($linkedUpdates);
+        }
+
         $isCash = $validated['payment_method'] === 'cash';
 
         // Notify cashier role
@@ -904,6 +973,9 @@ class ServiceRequestController extends Controller
             ], 422);
         }
 
+        $totalAmount = (float) ($serviceRequest->total_amount ?? $serviceRequest->price ?? 0);
+        $vatAmount = EmailContent::vatInclusivePortion($totalAmount);
+
         return response()->json([
             'receipt' => [
                 'receipt_number' => $serviceRequest->receipt_number,
@@ -914,6 +986,9 @@ class ServiceRequestController extends Controller
                 'service_type' => $serviceRequest->request_type ?? $serviceRequest->service_type,
                 'service_name' => $serviceRequest->service_name,
                 'service_date' => $serviceRequest->request_date,
+                'net_amount' => $vatAmount !== null ? round($totalAmount - $vatAmount, 2) : null,
+                'vat_amount' => $vatAmount,
+                'vat_rate' => 0.12,
                 'total_amount' => $serviceRequest->total_amount ?? $serviceRequest->price,
                 'payment_status' => $serviceRequest->payment_status,
                 'payment_method' => $serviceRequest->payment_method,

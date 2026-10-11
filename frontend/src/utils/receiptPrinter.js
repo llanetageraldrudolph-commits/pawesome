@@ -58,7 +58,7 @@ if (import.meta.env.DEV && typeof window !== "undefined") {
 
 function buildReceiptHtml(opts = {}, { includePrintButton = false } = {}) {
   const {
-    title = "Official Receipt",
+    title = "Invoice",
     receiptNumber = "",
     date = new Date().toLocaleString("en-PH"),
     cashier = "",
@@ -176,7 +176,7 @@ function buildReceiptHtml(opts = {}, { includePrintButton = false } = {}) {
     <!-- Header -->
     <div class="hd">
       <div class="n">${e(STORE_INFO.name)}</div>
-      <div class="a">${e(STORE_INFO.address)}</div>
+      <div class="a">${e(STORE_INFO.address).replace(/\n/g, "<br>")}</div>
       <div class="m">${e(STORE_INFO.email)}</div>
       <div class="t">${e(title)}</div>
     </div>

@@ -86,6 +86,12 @@
   font-weight: 750;
 }
 
+.svc-field-hint {
+  color: var(--landing-muted, #64748b);
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
 .svc-availability-status {
   color: var(--landing-muted, #64748b);
   font-size: 0.78rem;

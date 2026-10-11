@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState, useRef } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import DatePickerInput from "../../components/shared/DatePickerInput";
+import { CANCEL_REJECT_REASONS } from "../../utils/alert.jsx";
 import {
   faBan,
   faCalendarAlt,
@@ -230,6 +231,7 @@ const ReceptionistBookings = () => {
   const [showCancelModal, setShowCancelModal] = useState(false);
   const [selectedCancelBooking, setSelectedCancelBooking] = useState(null);
   const [cancelAction, setCancelAction] = useState(null);
+  const [cancelReason, setCancelReason] = useState("");
   const [cancelNote, setCancelNote] = useState("");
 
   const [showRescheduleModal, setShowRescheduleModal] = useState(false);
@@ -831,13 +833,21 @@ const ReceptionistBookings = () => {
     setShowCancelModal(false);
     setSelectedCancelBooking(null);
     setCancelAction(null);
+    setCancelReason("");
     setCancelNote("");
   };
 
   const handleCancelSubmit = async () => {
     if (!selectedCancelBooking) return;
 
-    if (cancelAction === "reject" && !cancelNote.trim()) {
+    const rejectReason =
+      cancelAction === "reject"
+        ? cancelReason === "__other__"
+          ? cancelNote.trim()
+          : cancelReason
+        : "";
+
+    if (cancelAction === "reject" && !rejectReason) {
       notify("error", "Please provide a reason for rejecting this cancel request.");
       return;
     }
@@ -855,10 +865,14 @@ const ReceptionistBookings = () => {
         body: JSON.stringify({
           action: cancelAction,
           note: cancelNote,
-          reason: cancelNote || "Cancellation approved by receptionist",
+          reason:
+            cancelAction === "reject"
+              ? rejectReason
+              : cancelNote || "Cancellation approved by receptionist",
           rejection_reason:
-            cancelNote ||
-            (cancelAction === "approve" ? "Cancellation approved by receptionist" : ""),
+            cancelAction === "reject"
+              ? rejectReason
+              : cancelNote || "Cancellation approved by receptionist",
         }),
       });
 
@@ -1657,17 +1671,44 @@ const ReceptionistBookings = () => {
                 }}
               >
                 <div className="form-group">
-                  <label>Receptionist Note</label>
-                  <textarea
-                    value={cancelNote}
-                    onChange={(event) => setCancelNote(event.target.value)}
-                    placeholder={
-                      cancelAction === "approve"
-                        ? "Add cancellation approval note..."
-                        : "Provide reason for rejecting cancellation..."
-                    }
-                    rows={4}
-                  />
+                  {cancelAction === "reject" ? (
+                    <>
+                      <label>Rejection Reason</label>
+                      <select
+                        value={cancelReason}
+                        onChange={(event) => setCancelReason(event.target.value)}
+                      >
+                        <option value="" disabled>
+                          Select a reason...
+                        </option>
+                        {CANCEL_REJECT_REASONS.map((reason) => (
+                          <option key={reason} value={reason}>
+                            {reason}
+                          </option>
+                        ))}
+                        <option value="__other__">Other (please specify)</option>
+                      </select>
+                      {cancelReason === "__other__" && (
+                        <textarea
+                          value={cancelNote}
+                          onChange={(event) => setCancelNote(event.target.value)}
+                          placeholder="Type the reason for rejecting this cancellation..."
+                          rows={3}
+                          style={{ marginTop: "8px" }}
+                        />
+                      )}
+                    </>
+                  ) : (
+                    <>
+                      <label>Receptionist Note</label>
+                      <textarea
+                        value={cancelNote}
+                        onChange={(event) => setCancelNote(event.target.value)}
+                        placeholder="Add cancellation approval note..."
+                        rows={4}
+                      />
+                    </>
+                  )}
                 </div>
 
                 <div className="hbk-foot">

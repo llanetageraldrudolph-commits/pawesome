@@ -202,6 +202,7 @@ class AppointmentController extends Controller
 
             // Automatically create grooming record if service category is Grooming
             if ($lockedService && $lockedService->category === 'Grooming') {
+                $groomingPrice = (float) ($lockedService->price ?? 0);
                 Grooming::create([
                     'customer_id' => $request->customer_id,
                     'pet_id' => $request->pet_id,
@@ -209,7 +210,12 @@ class AppointmentController extends Controller
                     'appointment_date' => Carbon::parse($request->scheduled_at)->toDateString(),
                     'appointment_time' => Carbon::parse($request->scheduled_at)->toTimeString(),
                     'notes' => $request->notes,
-                    'amount' => $lockedService->price ?? 0,
+                    'amount' => $groomingPrice,
+                    'base_amount' => $groomingPrice,
+                    'total_amount' => $groomingPrice,
+                    'amount_paid' => 0,
+                    'balance_due' => $groomingPrice,
+                    'payment_status' => 'unpaid',
                     'status' => 'pending',
                 ]);
             }

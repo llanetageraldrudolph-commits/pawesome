@@ -5,7 +5,7 @@
  */
 export const STORE_INFO = {
   name: "Pawesome Retreat Inc.",
-  address: "Aldana Street, San Isidro Village, Las Piñas City, Philippines 1740",
+  address: "Aldana Street, San Isidro\nVillage, Las Piñas City,\nPhilippines 1740",
   email: "pawesomeretreat24@gmail.com",
   phone: "(02) 8XXX-XXXX",
   tagline: "Professional Veterinary & Pet Hotel Services",

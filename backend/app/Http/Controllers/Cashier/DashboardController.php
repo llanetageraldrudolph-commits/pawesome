@@ -13,7 +13,10 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Schema;
 use App\Services\PaymentVerificationService;
+use App\Services\ServiceCatalog;
+use App\Support\EmailContent;
 
 class DashboardController extends Controller
 {
@@ -448,9 +451,20 @@ class DashboardController extends Controller
             return response()->json(['error' => 'Transaction not found'], 404);
         }
 
+        // Sales store VAT-inclusive subtotal; tax_amount is the extracted
+        // 12% portion and net_amount is the ex-VAT base.
+        $subtotal = (float) ($transaction->subtotal ?? $transaction->amount ?? 0);
+        $vatAmount = $transaction->tax_amount !== null
+            ? (float) $transaction->tax_amount
+            : EmailContent::vatInclusivePortion($subtotal);
+
         return response()->json([
             'transaction_id' => $transaction->id,
             'items' => $transaction->items ?? [],
+            'net_amount' => $vatAmount !== null ? round($subtotal - $vatAmount, 2) : null,
+            'vat_amount' => $vatAmount,
+            'vat_rate' => 0.12,
+            'subtotal' => $subtotal,
             'total' => $transaction->amount,
             'date' => $transaction->created_at->format('Y-m-d H:i:s'),
             'customer' => $transaction->customer ? $transaction->customer->name : 'Guest',
@@ -589,9 +603,13 @@ class DashboardController extends Controller
         // Get service request payments
         $serviceRequests = DB::table('service_requests')
             ->where('status', 'approved')
-            ->where('payment_status', 'pending')
+            ->whereIn('payment_status', ['pending', 'unpaid', 'rejected'])
             ->where(function ($q) {
-                $q->whereNotNull('payment_proof')
+                // 'unpaid'/'rejected' rows are counter collections — always
+                // listed. 'pending' rows need a submitted proof or a
+                // declared cash intent.
+                $q->whereIn('payment_status', ['unpaid', 'rejected'])
+                  ->orWhereNotNull('payment_proof')
                   ->orWhere('payment_method', 'cash');
             })
             ->orderBy('updated_at', 'desc')
@@ -608,8 +626,10 @@ class DashboardController extends Controller
                     'pet_name' => $request->pet_name,
                     'request_type' => $request->request_type ?? $request->service_type ?? 'Service',
                     'service_name' => $request->service_name ?? $request->request_type ?? 'Service Request',
-                    'amount' => $request->total_amount ?? $request->price ?? $request->service_price ?? 500,
-                    'payment_method' => $request->payment_method,
+                    'amount' => $this->serviceRequestQueueAmount($request),
+                    // A rejected online attempt is settled at the counter —
+                    // present it as a cash collection, not a stale e-wallet row.
+                    'payment_method' => $request->payment_status === 'rejected' ? null : $request->payment_method,
                     'payment_reference' => $request->payment_reference ?? null,
                     'payment_proof' => $request->payment_proof,
                     'proof_url' => $request->payment_proof ? url('/api/files/payment-proofs/service-request/' . $request->id . '/view') : null,
@@ -632,17 +652,25 @@ class DashboardController extends Controller
         $boardings = DB::table('boardings')
             ->where($excludeLinked)
             ->whereIn('status', ['pending', 'approved', 'scheduled', 'checked_in', 'in_care', 'ready_for_pickup'])
-            ->where('payment_status', 'pending')
+            ->whereIn('payment_status', ['pending', 'unpaid', 'rejected'])
             ->where(function ($q) {
-                // Walk-in bookings (pending status) have no proof yet — always show them
-                // Other statuses: only show if customer uploaded proof or indicated cash
-                $q->where('status', 'pending')
+                // 'unpaid'/'rejected' rows are counter collections (cash at the
+                // desk) — always listed. Walk-in bookings (pending status)
+                // likewise have no proof yet. Other rows: only show if the
+                // customer uploaded proof or indicated cash.
+                $q->whereIn('payment_status', ['unpaid', 'rejected'])
+                  ->orWhere('status', 'pending')
                   ->orWhereNotNull('payment_proof')
                   ->orWhere('payment_method', 'cash');
             })
             ->orderBy('updated_at', 'desc')
             ->get()
             ->map(function ($boarding) {
+                $fallback = (float) ($boarding->total_amount ?? 0);
+                if ($fallback <= 0 && is_numeric($boarding->rate_per_day ?? null)) {
+                    $fallback = (float) $boarding->rate_per_day * max(1, (int) ($boarding->number_of_days ?? 1));
+                }
+
                 return [
                     'id' => $boarding->id,
                     'payable_type' => 'boarding',
@@ -654,8 +682,8 @@ class DashboardController extends Controller
                     'pet_name' => $boarding->pet_name,
                     'request_type' => 'Pet Boarding',
                     'service_name' => 'Pet Hotel Boarding #' . $boarding->id,
-                    'amount' => $boarding->total_amount,
-                    'payment_method' => $boarding->payment_method,
+                    'amount' => $this->queueAmount('boarding', (int) $boarding->id, null, 'hotel', $fallback),
+                    'payment_method' => $boarding->payment_status === 'rejected' ? null : $boarding->payment_method,
                     'payment_reference' => $boarding->payment_reference,
                     'payment_proof' => $boarding->payment_proof,
                     'proof_url' => $boarding->payment_proof ? url('/api/files/payment-proofs/boarding/' . $boarding->id . '/view') : null,
@@ -666,9 +694,11 @@ class DashboardController extends Controller
             });
 
         $confinements = DB::table('medical_confinements')
-            ->where('payment_status', 'pending')
+            ->whereIn('payment_status', ['pending', 'unpaid', 'rejected'])
             ->where(function ($q) {
-                $q->whereNotNull('payment_proof')
+                // 'unpaid'/'rejected' = counter collection — no valid proof.
+                $q->whereIn('payment_status', ['unpaid', 'rejected'])
+                  ->orWhereNotNull('payment_proof')
                   ->orWhere('payment_method', 'cash');
             })
             ->orderBy('updated_at', 'desc')
@@ -686,7 +716,7 @@ class DashboardController extends Controller
                     'request_type' => 'Medical Confinement',
                     'service_name' => 'Medical Confinement #' . $confinement->id,
                     'amount' => $confinement->final_amount ?? $confinement->estimated_cost ?? 0,
-                    'payment_method' => $confinement->payment_method,
+                    'payment_method' => $confinement->payment_status === 'rejected' ? null : $confinement->payment_method,
                     'payment_reference' => $confinement->payment_reference,
                     'payment_proof' => $confinement->payment_proof,
                     'proof_url' => $confinement->payment_proof ? url('/api/files/payment-proofs/medical_confinement/' . $confinement->id . '/view') : null,
@@ -702,7 +732,7 @@ class DashboardController extends Controller
         $appointments = Appointment::with(['customer', 'pet', 'service'])
             ->where($excludeLinked)
             ->whereIn('status', ['pending', 'approved', 'in_consultation', 'needs_confinement', 'awaiting_payment', 'treated'])
-            ->whereIn('payment_status', ['unpaid', 'pending'])
+            ->whereIn('payment_status', ['unpaid', 'pending', 'rejected'])
             ->orderBy('updated_at', 'desc')
             ->get()
             ->map(function ($appointment) {
@@ -717,7 +747,7 @@ class DashboardController extends Controller
                     'pet_name' => $appointment->pet?->name,
                     'request_type' => 'appointment',
                     'service_name' => $appointment->service?->name ?? 'Veterinary Consultation',
-                    'amount' => $appointment->total_amount ?? $appointment->balance_due ?? $appointment->price ?? 0,
+                    'amount' => $this->queueAmount('veterinary', (int) $appointment->id, $appointment->service?->name, 'vet', (float) ($appointment->total_amount ?? $appointment->balance_due ?? $appointment->price ?? $appointment->service?->price ?? 0)),
                     'payment_method' => $appointment->payment_method,
                     'payment_reference' => $appointment->payment_reference,
                     'payment_proof' => $appointment->payment_proof,
@@ -732,7 +762,7 @@ class DashboardController extends Controller
         $groomings = DB::table('groomings')
             ->where($excludeLinked)
             ->whereNotIn('status', ['completed', 'cancelled', 'rejected'])
-            ->whereIn('payment_status', ['pending', 'unpaid'])
+            ->whereIn('payment_status', ['pending', 'unpaid', 'rejected'])
             ->orderBy('updated_at', 'desc')
             ->get()
             ->map(function ($grooming) {
@@ -749,8 +779,8 @@ class DashboardController extends Controller
                     'pet_name'         => $pet?->name ?? null,
                     'request_type'     => 'Grooming',
                     'service_name'     => $grooming->service ?? 'Grooming Service',
-                    'amount'           => $grooming->total_amount ?? $grooming->amount ?? 0,
-                    'payment_method'   => $grooming->payment_method ?? null,
+                    'amount'           => $this->queueAmount('grooming', (int) $grooming->id, $grooming->service ?? null, 'grooming', (float) ($grooming->total_amount ?? $grooming->amount ?? $grooming->base_amount ?? $grooming->balance_due ?? 0)),
+                    'payment_method'   => $grooming->payment_status === 'rejected' ? null : ($grooming->payment_method ?? null),
                     'payment_reference'=> $grooming->payment_reference ?? null,
                     'payment_proof'    => $grooming->payment_proof ?? null,
                     'proof_url'        => $grooming->payment_proof
@@ -765,6 +795,78 @@ class DashboardController extends Controller
         $allPayments = $serviceRequests->concat($boardings)->concat($confinements)->concat($appointments)->concat($groomings);
 
         return response()->json(['payments' => $allPayments]);
+    }
+
+    /**
+     * Authoritative queue amount for a payable record: persisted total →
+     * itemized bill → catalog price for its service bucket. A payable row
+     * should never surface in the cashier queue as ₱0.
+     */
+    private function queueAmount(string $serviceType, int $serviceId, ?string $serviceName, string $bucket, float $fallback): float
+    {
+        if ($fallback > 0) {
+            return $fallback;
+        }
+
+        $billed = (float) DB::table('service_item_usages')
+            ->where('service_type', $serviceType)
+            ->where('service_id', $serviceId)
+            ->where('is_billable', true)
+            ->sum('total_price');
+
+        if ($billed > 0) {
+            return $billed;
+        }
+
+        return ServiceCatalog::priceFor($serviceName, $bucket);
+    }
+
+    /**
+     * Queue amount for a service_request. The SR itself may carry no price
+     * (customer-submitted requests often don't) — the authoritative total
+     * lives on the linked grooming/boarding/appointment record created at
+     * approval, or in its itemized bill, or in the services catalog.
+     */
+    private function serviceRequestQueueAmount(object $serviceRequest): float
+    {
+        foreach (['total_amount', 'price', 'service_price'] as $column) {
+            $value = $serviceRequest->{$column} ?? null;
+            if (is_numeric($value) && (float) $value > 0) {
+                return (float) $value;
+            }
+        }
+
+        $bucket = ServiceCatalog::bucketFor($serviceRequest->request_type ?? $serviceRequest->service_type ?? null);
+
+        [$table, $serviceType] = match ($bucket) {
+            'grooming' => ['groomings', 'grooming'],
+            'hotel' => ['boardings', 'boarding'],
+            'vet' => ['appointments', 'veterinary'],
+            default => [null, null],
+        };
+
+        if ($table && Schema::hasColumn($table, 'service_request_id')) {
+            $linked = DB::table($table)->where('service_request_id', $serviceRequest->id)->first();
+            if ($linked) {
+                $fallback = (float) ($linked->total_amount ?? $linked->amount ?? $linked->price ?? 0);
+                $amount = $this->queueAmount(
+                    $serviceType,
+                    (int) $linked->id,
+                    $serviceRequest->service_name ?? $linked->service ?? null,
+                    $bucket,
+                    $fallback
+                );
+                if ($amount > 0) {
+                    return $amount;
+                }
+            }
+        }
+
+        $amount = ServiceCatalog::priceFor($serviceRequest->service_name ?? null, $bucket);
+
+        // Preserve the legacy estimate floor for request types with no
+        // catalog representation at all — never surface ₱0 in the queue.
+        return $amount > 0 ? $amount : 500.0;
     }
 
     public function verifyPayment(Request $request, $id)
@@ -992,6 +1094,9 @@ class DashboardController extends Controller
             ? DB::table('users')->where('id', $order->verified_by)->value('name')
             : null;
 
+        $totalAmount = (float) ($order->total_amount ?? 0);
+        $vatAmount = EmailContent::vatInclusivePortion($totalAmount);
+
         return response()->json([
             'receipt' => [
                 'order_id' => $order->id,
@@ -999,6 +1104,9 @@ class DashboardController extends Controller
                 'customer_name' => $order->customer_name,
                 'customer_email' => $order->customer_email,
                 'items' => $items,
+                'net_amount' => $vatAmount !== null ? round($totalAmount - $vatAmount, 2) : null,
+                'vat_amount' => $vatAmount,
+                'vat_rate' => 0.12,
                 'total_amount' => $order->total_amount,
                 'payment_method' => $order->payment_method,
                 'payment_reference' => $order->payment_reference ?? null,

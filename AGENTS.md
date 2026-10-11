@@ -301,6 +301,140 @@ configuration; review `docs/DEPLOYMENT.md` before using any provider settings.
   dedup) and on the Railway `brevo` HTTPS API transport (register + forgot —
   Brevo events `sent`→`delivered`). Helper: `App\Support\EmailContent`.
   Tests: `php artisan test --filter=EmailStructuredContentTest` (12/12).
+- **₱0 billings in cashier payment approvals: FIXED** — bookings with an
+  unmatched/generic service name (e.g. customer-submitted "Grooming") were
+  reaching the cashier queue at ₱0 because producers never resolved a
+  catalog price. `App\Services\ServiceCatalog` is now the single resolver
+  (name match → per-bucket default service → materializes a priced default);
+  every producer uses it: `ServiceRequestController@store`,
+  `ReceptionistRequestController@store`/`updateStatus`/`approve`,
+  `WalkInController` (grooming), `GroomingController@store`, and
+  `AppointmentController` grooming auto-create (all persist
+  amount/base_amount/total_amount/balance_due). Approval paths backfill
+  ₱0 linked records + `service_requests.price`/`total_amount` and call
+  `ServiceBillingService::ensureBaseServiceItem` for grooming and boarding.
+  Cashier queue (`Cashier\DashboardController@getPaymentRequests`) resolves
+  amounts via `queueAmount`/`serviceRequestQueueAmount` (persisted total →
+  itemized bill → catalog → ₱500 estimate floor), lists `unpaid`
+  boardings/confinements for counter collection, and
+  `PaymentVerificationService::markLinkedServiceAsPaidFromRequest` normalizes
+  `hotel`→`boardings` via `ServiceCatalog::bucketFor` (hotel-typed requests
+  previously left the boarding unpaid). `verifyTablePayment` accepts `unpaid`
+  confinements. Frontend `usePaymentApprovals`/`PaymentApprovals` gate Reject
+  to `payment_status === 'pending'` (card + modal) and self-heal the list on
+  stale-state 422s. Existing ₱0 rows were repaired via tinker (catalog
+  backfill + `syncServicePaymentState`).
+- **Reject → resubmit → verify desync: FIXED** — rejected/resubmitted payments
+  never reached booked records because propagation was one-way
+  (SR → linked record on verify only). `PaymentVerificationService` is now
+  bidirectional: verifying a linked record (grooming/boarding/appointment)
+  marks its parent SR paid with a shared receipt via `service_request_id`;
+  rejecting either side propagates to a `pending` counterpart
+  (`markLinkedServiceAsRejected`/`markServiceRequestAsRejected`); reject is
+  restricted to `pending` proofs (previous `unpaid`/`rejected` in the allowlist
+  let cashiers "reject" a payment that never existed). Resubmit endpoints
+  propagate the `pending` state + method/reference/proof to the counterpart
+  (`ServiceRequestController::uploadPaymentProof` → linked record;
+  `BoardingController::uploadPaymentProof` → parent SR via
+  `onlyExistingColumns`). `verify`/`updatePaymentStatus` for linked types now
+  also persist `payment_method`. Cashier queue lists `unpaid`/`rejected`
+  approved SRs for counter collection; `rejected` linked rows emit
+  `payment_method => null` so the UI treats them as counter payments.
+  `appointments` has no proof/method columns — appointment payments flow
+  through the SR or the counter. E2E-verified: SR#11/GR#7 full
+  reject→resubmit→verify cycle (shared receipt `SR-REC-…-11`), GR#4
+  linked-verify paid SR#7, stranded pair SR#10/APT#3 settled via SR verify.
+- **Cashier approvals card layout: FIXED** — `pa-card-reference` was a third
+  flex child of `.pa-card-body` (`justify-content: space-between`), so on
+  cards with a customer reference the amount floated mid-card while the ref
+  hugged the right edge; the ref now lives inside `.pa-amount-section`.
+  `.pa-bulk-bar` is sticky but its `rgba(255,95,147,.04)` background let
+  cards bleed through when scrolling — now opaque `#fdf2f8`. Null-method
+  (counter) rows rendered a meaningless "—" badge — `getMethodConfig` now
+  falls back to the Cash config. `.pos-order-panel` (360px cart) is no
+  longer rendered while `activeTab === 'payment-approvals'`, so the queue
+  gets full width and the approvals tab stops clipping at ~1280px; cart
+  state lives in `CashierPOS_New` and survives the unmount. Truncation
+  guards added on `.pa-service`/`.pa-service-name`; ≤768px stacks body and
+  puts the ref on its own line. Screenshot-verified at 1920/1440/1280/
+  1100/1000/768.
+- **ServiceBillingPanel 429 fetch storm: FIXED** — `onBillingUpdate` was a
+  `useCallback` dep, so inline parent callbacks (receptionist hotel/grooming
+  lists) recreated it every render → infinite `/billing/{type}/{id}/summary`
+  loop → per-IP `throttle:api` (60/min) exhausted → whole API 429'd. Fixed by
+  holding the callback in a ref and memoizing the two parent callbacks
+  (`handleBillingRefresh`). Backend throttle unchanged.
+- **Manual pet-name entry removed from bookings: FIXED** — every booking now
+  links a real `pets` row via `pet_id`; typed names are never persisted.
+  `ServiceRequestController::store` requires `pet_id` (`exists:pets,id`),
+  keeps the owner/archive/species-compatibility checks, and derives
+  `pet_name`/`pet_type` from the `Pet` model (client-sent names are ignored).
+  `ReceptionistRequestController::store` requires `pet_id` and derives pet +
+  customer identity from `pet->customer` (`service_requests.customer_id`
+  stores a users.id). `HotelForm` lost its "Enter pet details manually" path
+  and implicit `/customer/pets` create-on-submit; the select is required and
+  a "Register a pet first" link shows when the account has no pets.
+  `ServiceBookingModal` shows a registered-pet dropdown for authenticated
+  customers (guests keep only the pet-type select since the booking can't
+  submit until login). Draft restore (`pet_id` honored, name/species only as
+  unique-match hints) updated in Grooming/Vet/Hotel forms. Latent bug found
+  and fixed: `ServiceRequestController::cancel` now propagates `cancelled`
+  to linked appointments/groomings/boardings — the auto-created pending
+  grooming otherwise blocked the time slot forever. All other producers
+  (walk-ins, appointments, boardings, chatbot bookings, confinements)
+  already required `pet_id`. Tests: `CustomerBookingRulesTest` (incl. new
+  missing-pet 422 / foreign-pet 403 / spoofed-name-derived cases),
+  `EmailServiceWorkflowTest`, `EmailStructuredContentTest`,
+  `NotificationMatrixTest`, `P1SecurityIntegrityTest`,
+  `VeterinaryWorkflowTest`, `ServiceBillingRemediationTest` — all green.
+- **Cancellation/rejection reason dropdowns: FIXED** — every booking
+  cancel/reject prompt now shows a `<select>` of preset reasons plus an
+  "Other (please specify)" free-text fallback via the shared
+  `showReasonPrompt(message, title, confirmText, reasonOptions)` in
+  `utils/alert.jsx`. Presets: `CUSTOMER_CANCEL_REASONS`,
+  `STAFF_CANCEL_REASONS`, `BOOKING_REJECT_REASONS`, `CANCEL_REJECT_REASONS`,
+  `PAYMENT_REJECT_REASONS`, `ORDER_REASONS`. Customer grooming/vet/hotel
+  cancels previously collected NO reason; they now prompt and POST
+  `{ reason }`. `service_requests`/`boardings`/`groomings` gained a
+  `cancellation_reason` column (migration
+  `2026_10_11_050413_add_cancellation_reason_to_booking_tables`;
+  `appointments` already had one) and the cancel endpoints persist it —
+  `ServiceRequestController::cancel` also propagates it to linked
+  appointments/groomings/boardings. The ReceptionistBookings
+  cancel-request modal uses an inline `<select>` (approve keeps an optional
+  note). Receipt titles switched to invoice terminology (`SALES INVOICE`,
+  `SERVICE INVOICE`, `INVOICE`) and `STORE_INFO.address` is a 3-line
+  `\n`-joined string rendered line-by-line by every receipt.
+- **VAT breakdown on all receipts: FIXED** — prices are VAT-inclusive;
+  the 12% portion is `total × 0.12 / 1.12` (`EmailContent::vatInclusivePortion`
+  PHP-side, `computeVatBreakdown` in `utils/storeInfo.js` client-side).
+  Every receipt API payload now carries `net_amount`, `vat_amount`,
+  `vat_rate`: `GET /customer/requests/{id}/receipt`,
+  `GET /cashier/receipt/{id}` (uses stored `sales.subtotal`/`tax_amount`),
+  `GET /cashier/customer-order-receipts/{id}`,
+  `GET /customer/store/orders/{id}/receipt`, and
+  `GET /veterinary/receipt/{id}`. On-screen receipts that lacked the
+  breakdown now show Net Amount (ex-VAT) + VAT (12%) + Total:
+  the PaymentApprovals verify-success mini receipt, the CashierTransactions
+  detail modal footer, and the cashier text receipt download.
+- **Booking review step on all booking forms: FIXED** —
+  `components/shared/BookingReviewModal.jsx` shows pet (name/species/breed/
+  age), booking details, pricing summary, vaccination-card preview, and
+  notes with Go back / Confirm booking before the API call. Wired into
+  customer GroomingForm, VetForm, HotelForm, the landing
+  ServiceBookingModal, and receptionist walk-in flows
+  (`WalkInBookingModal` — the live modal on `/receptionist/walk-ins` and
+  `/super-receptionist/walk-ins`; `NewWalkInBookingModal` is wired but its
+  only importer `ReceptionistAppointmentsBoarding.jsx` is unrouted legacy,
+  same as `ReceptionistBookings.jsx`). Also fixed a pre-existing wizard
+  bug: existing-customer mode advanced past its 3 steps into a duplicate
+  "Step 4 of 3" booking form — the footer now caps at step 3 for existing
+  customers. Browser-verified end-to-end (existing customer + pet select →
+  review → Go back preserves form → Confirm posts once → success toast,
+  zero console errors).
+  Already-VAT surfaces untouched: `printReceipt`/`escpos` thermal output,
+  `CashierPOS_New` completed receipt, `VetReceipt`, and the
+  `payment-receipt` email (auto-filled by `EmailDeliveryService::receipt`).
 
 ## Reports
 

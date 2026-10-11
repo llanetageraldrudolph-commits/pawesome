@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from "react";
-import { showConfirm, showWarning, showSuccess, showError } from "../../utils/alert.jsx";
+import { showConfirm, showWarning, showSuccess, showError, showReasonPrompt, CUSTOMER_CANCEL_REASONS } from "../../utils/alert.jsx";
+import BookingReviewModal from "../shared/BookingReviewModal";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import PaymentUploadModal from "../../components/shared/PaymentUploadModal";
 import catHotelImg from "../../assets/CATHOTEL.jpg";
@@ -21,11 +22,7 @@ import { apiRequest } from "../../api/client";
 import { getDraft, clearDraft } from "../../utils/preBookingDraft";
 import DatePickerInput from "../../components/shared/DatePickerInput";
 import { formatDateOnly, parseDateOnly } from "../../utils/date";
-import {
-  SPECIES_OPTIONS,
-  getBreedOptions,
-  isManualBreedRequired,
-} from "../../config/petSpeciesConfig";
+
 
 const CATEGORY_CONFIG = {
   dog_hotel: { img: dogHotelImg, label: "Dog Hotel",  badge: "#f97316" },
@@ -77,8 +74,6 @@ const HotelForm = () => {
     pet_id: "",
     pet_name: "",
     pet_type: "",
-    pet_breed: "",
-    pet_breed_manual: "",
     check_in_date: "",
     boarding_type: "standard",
     notes: "",
@@ -125,6 +120,9 @@ const HotelForm = () => {
     if (!draft || draft.service_type !== "hotel") return;
 
     const updates = {};
+    // Pet identity resolves to a registered pet once the list loads —
+    // the draft's name/species are only matching hints, never submitted raw.
+    if (draft.form_data?.pet_id) updates.pet_id = draft.form_data.pet_id;
     if (draft.form_data?.pet_name) updates.pet_name = draft.form_data.pet_name;
     if (draft.form_data?.pet_type) updates.pet_type = draft.form_data.pet_type;
     if (draft.form_data?.check_in_date) updates.check_in_date = draft.form_data.check_in_date;
@@ -140,9 +138,49 @@ const HotelForm = () => {
     }
 
     if (Object.keys(updates).length > 0) {
-      showSuccess("We have restored your booking details. Please select your registered pet or enter details manually to continue.");
+      showSuccess("We have restored your booking details. Please select your registered pet to continue.");
     }
   }, []);
+
+  // Once pets finish loading, resolve a draft's pet hint to a real pet so the
+  // booking is always linked — a restored name is never submitted as-is.
+  useEffect(() => {
+    if (pets.length === 0) return;
+
+    if (bookingForm.pet_id) {
+      // Draft carried a pet_id — fill derived display fields from the record.
+      const selected = pets.find((p) => String(p.id) === String(bookingForm.pet_id));
+      if (!selected || bookingForm.pet_name) return;
+      const updatedForm = {
+        ...bookingForm,
+        pet_name: selected.name,
+        pet_type: selected.species || selected.type || "",
+      };
+      setBookingForm(updatedForm);
+      if (updatedForm.check_in_date) fetchBoardingAvailability(updatedForm);
+      return;
+    }
+
+    if (!bookingForm.pet_name && !bookingForm.pet_type) return;
+
+    const name = (bookingForm.pet_name || "").toLowerCase();
+    const species = (bookingForm.pet_type || "").toLowerCase();
+    const byName = name ? pets.filter((p) => (p.name || "").toLowerCase() === name) : [];
+    const bySpecies = species
+      ? pets.filter((p) => (p.species || p.type || "").toLowerCase() === species)
+      : [];
+    const pet = byName.length === 1 ? byName[0] : bySpecies.length === 1 ? bySpecies[0] : null;
+    if (!pet) return;
+
+    const updatedForm = {
+      ...bookingForm,
+      pet_id: pet.id,
+      pet_name: pet.name,
+      pet_type: pet.species || pet.type || "",
+    };
+    setBookingForm(updatedForm);
+    if (updatedForm.check_in_date) fetchBoardingAvailability(updatedForm);
+  }, [pets, bookingForm.pet_id, bookingForm.pet_name, bookingForm.pet_type]);
 
   const selectedPet = pets.find((pet) => String(pet.id) === String(bookingForm.pet_id));
 
@@ -184,7 +222,9 @@ const HotelForm = () => {
     }));
   };
 
-  const handleCreateBooking = async (e) => {
+  const [reviewOpen, setReviewOpen] = useState(false);
+
+  const handleCreateBooking = (e) => {
     e.preventDefault();
 
     if (!selectedRoom) {
@@ -199,35 +239,26 @@ const HotelForm = () => {
       return;
     }
 
-    // Vaccination card is now optional
-    // Removed requirement to allow booking without vaccination card
+    if (!bookingForm.pet_id || !selectedPet) {
+      setError("Please select one of your registered pets for this booking.");
+      showWarning("Please select one of your registered pets for this booking.");
+      return;
+    }
 
+    setReviewOpen(true);
+  };
+
+  // Vaccination card is optional
+  const confirmBooking = async () => {
     try {
       setLoading(true);
       setError("");
 
-      const finalBreed = isManualBreedRequired(bookingForm.pet_breed)
-        ? bookingForm.pet_breed_manual.trim()
-        : bookingForm.pet_breed.trim();
-
-      let petId = bookingForm.pet_id;
-      if (!petId) {
-        const petRes = await apiRequest("/customer/pets", {
-          method: "POST",
-          body: JSON.stringify({
-            name: bookingForm.pet_name.trim(),
-            species: bookingForm.pet_type.trim(),
-            breed: finalBreed || null,
-          }),
-        });
-        petId = petRes?.pet?.id;
-      }
-
       const formData = new FormData();
-      formData.append("pet_id", petId || "");
-      formData.append("pet_name", selectedPet?.name || bookingForm.pet_name || "");
-      formData.append("pet_type", selectedPet?.type || selectedPet?.species || bookingForm.pet_type || "");
-      formData.append("pet_breed", selectedPet?.breed || finalBreed || "");
+      formData.append("pet_id", bookingForm.pet_id);
+      formData.append("pet_name", selectedPet.name || "");
+      formData.append("pet_type", selectedPet.type || selectedPet.species || "");
+      formData.append("pet_breed", selectedPet.breed || "");
       formData.append("check_in_date", bookingForm.check_in_date);
       formData.append("number_of_days", "1");
       if (bookingForm.room_id) {
@@ -246,14 +277,13 @@ const HotelForm = () => {
         body: formData,
       });
 
+      setReviewOpen(false);
       setSuccessMessage("Pet boarding request submitted successfully.");
       showSuccess("Pet boarding request submitted successfully.");
       setBookingForm({
         pet_id: "",
         pet_name: "",
         pet_type: "",
-        pet_breed: "",
-        pet_breed_manual: "",
         check_in_date: "",
         boarding_type: "standard",
         notes: "",
@@ -271,11 +301,17 @@ const HotelForm = () => {
   };
 
   const handleCancelBooking = async (bookingId) => {
-    if (!(await showConfirm("Cancel this pending boarding request?"))) return;
+    const reason = await showReasonPrompt(
+      "Cancel this pending boarding request? Please select a reason — it will be recorded.",
+      "Cancel Boarding Request",
+      "Yes, Cancel",
+      CUSTOMER_CANCEL_REASONS
+    );
+    if (reason === null) return;
 
     try {
       setLoading(true);
-      await apiRequest(`/customer/boarding-requests/${bookingId}/cancel`, { method: "POST" });
+      await apiRequest(`/customer/boarding-requests/${bookingId}/cancel`, { method: "POST", body: JSON.stringify({ reason }) });
       setSuccessMessage("Boarding request cancelled.");
       showSuccess("Boarding request cancelled.");
       await fetchMyBookings();
@@ -372,22 +408,39 @@ const HotelForm = () => {
 
   const handleChange = (e) => {
     const { name, value } = e.target;
-    setBookingForm((prev) => ({
-      ...prev,
-      [name]: value,
-      // Breed list depends on the species — clear stale breed on change
-      ...(name === "pet_type" ? { pet_breed: "", pet_breed_manual: "" } : {}),
-      // Leaving a manual-breed option clears the typed breed
-      ...(name === "pet_breed" && !isManualBreedRequired(value)
-        ? { pet_breed_manual: "" }
-        : {}),
-    }));
 
-    if (name === "pet_id" || name === "check_in_date" || name === "pet_type") {
+    // Pet identity always comes from the selected registered pet — never
+    // typed manually — so the booking stays linked to a real pets row.
+    if (name === "pet_id") {
+      const pet = pets.find((item) => String(item.id) === String(value));
+      const updatedForm = {
+        ...bookingForm,
+        pet_id: value,
+        pet_name: pet?.name || "",
+        pet_type: pet?.species || pet?.type || "",
+      };
+      setBookingForm((prev) => ({
+        ...prev,
+        pet_id: value,
+        pet_name: pet?.name || "",
+        pet_type: pet?.species || pet?.type || "",
+      }));
+      setSelectedRoom(null);
+      if (value && updatedForm.check_in_date && updatedForm.pet_type) {
+        fetchBoardingAvailability(updatedForm);
+      } else {
+        setBoardingAvailability(null);
+      }
+      return;
+    }
+
+    setBookingForm((prev) => ({ ...prev, [name]: value }));
+
+    if (name === "check_in_date") {
       const updatedForm = { ...bookingForm, [name]: value };
       // A previous selection is only valid for the exact pet+date pair
       setSelectedRoom(null);
-      if (value && updatedForm.check_in_date && (updatedForm.pet_id || updatedForm.pet_type)) {
+      if (value && updatedForm.check_in_date && updatedForm.pet_id) {
         // Pass updatedForm — bookingForm state here is still pre-change
         fetchBoardingAvailability(updatedForm);
       } else {
@@ -452,9 +505,9 @@ const HotelForm = () => {
 
             <form onSubmit={handleCreateBooking}>
               <div className="form-group">
-                <label>Saved Pet</label>
-                <select name="pet_id" value={bookingForm.pet_id} onChange={handleChange}>
-                  <option value="">Enter pet details manually</option>
+                <label>Pet *</label>
+                <select name="pet_id" value={bookingForm.pet_id} onChange={handleChange} required>
+                  <option value="">Select your pet</option>
                   {pets.map((pet) => {
                     const info = getPetDisplayInfo(pet);
                     return (
@@ -465,6 +518,13 @@ const HotelForm = () => {
                     );
                   })}
                 </select>
+                {pets.length === 0 && (
+                  <p className="hotel-no-pets-notice">
+                    You need a registered pet to book a hotel stay.{" "}
+                    <a href="/customer/pets">Register a pet first</a>, then come
+                    back to book.
+                  </p>
+                )}
               </div>
 
               {selectedPet && petDisplayInfo && (
@@ -477,53 +537,6 @@ const HotelForm = () => {
                     <p><strong>Age:</strong> {petDisplayInfo.age}</p>
                   )}
                 </div>
-              )}
-
-              {!bookingForm.pet_id && (
-                <>
-                  <div className="form-group">
-                    <label>Pet Name *</label>
-                    <input type="text" name="pet_name" value={bookingForm.pet_name} onChange={handleChange} required placeholder="Enter pet name" />
-                  </div>
-                  <div className="form-row">
-                    <div className="form-group">
-                      <label>Type of Pet *</label>
-                      <select name="pet_type" value={bookingForm.pet_type} onChange={handleChange} required>
-                        <option value="">Select type</option>
-                        {SPECIES_OPTIONS.map((species) => (
-                          <option key={species} value={species}>{species}</option>
-                        ))}
-                      </select>
-                    </div>
-                    <div className="form-group">
-                      <label>Breed</label>
-                      <select
-                        name="pet_breed"
-                        value={bookingForm.pet_breed}
-                        onChange={handleChange}
-                        disabled={!bookingForm.pet_type}
-                      >
-                        <option value="">
-                          {bookingForm.pet_type ? "Select breed" : "Select pet type first"}
-                        </option>
-                        {getBreedOptions(bookingForm.pet_type).map((breed) => (
-                          <option key={breed} value={breed}>{breed}</option>
-                        ))}
-                      </select>
-                      {isManualBreedRequired(bookingForm.pet_breed) && (
-                        <input
-                          type="text"
-                          name="pet_breed_manual"
-                          value={bookingForm.pet_breed_manual}
-                          onChange={handleChange}
-                          required
-                          placeholder="Please specify the breed"
-                          style={{ marginTop: "0.5rem" }}
-                        />
-                      )}
-                    </div>
-                  </div>
-                </>
               )}
 
               <div className="form-row">
@@ -777,6 +790,42 @@ const HotelForm = () => {
         paymentStatus={uploadModal.paymentStatus}
         rejectionReason={uploadModal.rejectionReason}
         paymentMethod={uploadModal.paymentMethod}
+      />
+
+      <BookingReviewModal
+        open={reviewOpen}
+        onClose={() => setReviewOpen(false)}
+        onConfirm={confirmBooking}
+        loading={loading}
+        badge="Pet Hotel"
+        pet={selectedPet ? {
+          name: selectedPet.name,
+          species: selectedPet.species || selectedPet.type,
+          breed: selectedPet.breed,
+          age: petDisplayInfo?.age,
+        } : null}
+        details={[
+          { label: "Check-in", value: bookingForm.check_in_date && new Date(`${bookingForm.check_in_date}T00:00:00`).toLocaleDateString("en-PH", { weekday: "short", month: "short", day: "numeric", year: "numeric" }) },
+          { label: "Stay length", value: `${pricing.days} day${pricing.days !== 1 ? "s" : ""}` },
+          { label: "Room", value: selectedRoom?.room_name },
+          { label: "Room type", value: selectedRoom?.room_type?.replace(/_/g, " ") },
+          selectedRoom?.capacity || selectedRoom?.max_capacity
+            ? { label: "Capacity", value: `${selectedRoom.capacity ?? selectedRoom.max_capacity} pet${(selectedRoom.capacity ?? selectedRoom.max_capacity) !== 1 ? "s" : ""}` }
+            : null,
+          bookingForm.boarding_type ? { label: "Boarding type", value: bookingForm.boarding_type.replace(/_/g, " ") } : null,
+        ].filter(Boolean)}
+        pricing={selectedRoom ? {
+          rows: [
+            { label: `${selectedRoom.room_name || "Room"} — ₱${Number(selectedRoom.daily_rate).toLocaleString("en-PH")}/day × ${pricing.days}`, value: `₱${Number(pricing.roomSubtotal).toLocaleString("en-PH", { minimumFractionDigits: 2 })}` },
+          ],
+          total: `₱${Number(pricing.total).toLocaleString("en-PH", { minimumFractionDigits: 2 })}`,
+        } : null}
+        notes={bookingForm.notes}
+        attachment={vaccinationCard ? {
+          name: vaccinationCard.name,
+          previewUrl: vaccinationPreview,
+          isImage: vaccinationCard.type?.startsWith("image/"),
+        } : null}
       />
     </div>
   );

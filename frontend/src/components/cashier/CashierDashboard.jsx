@@ -35,6 +35,7 @@ import { apiRequest } from "../../api/client";
 import { formatCurrency } from "../../utils/currency";
 import { useAuth } from "../../context/AuthContext";
 import { showAlert, showSuccess, showError } from "../../utils/alert.jsx";
+import { STORE_INFO } from "../../utils/storeInfo";
 import { exportToCSV, exportToPDF, exportToExcel } from "../../utils/reportExport";
 
 const toNumber = (value) => {
@@ -583,7 +584,8 @@ const CashierDashboard = () => {
       const data = await apiRequest(`/cashier/receipt/${receiptTransactionId}`);
       
       const receiptContent = `
-Pawesome Pet Grooming
+${STORE_INFO.name}
+SALES INVOICE
 =====================
 Receipt #${receiptTransactionId}
 Date: ${new Date().toLocaleString()}
@@ -591,7 +593,9 @@ Cashier: ${name}
 ---------------------
 ${data.items?.map(item => `${item.name} x${item.qty} - ${formatCurrency(item.price)}`).join('\n') || 'Items: N/A'}
 ---------------------
-Subtotal: ${formatCurrency(data.subtotal || 0)}
+Subtotal (incl. VAT): ${formatCurrency(data.subtotal ?? data.total ?? 0)}
+Net Amount (ex-VAT): ${formatCurrency(data.net_amount ?? 0)}
+VAT (12%): ${formatCurrency(data.vat_amount ?? 0)}
 Discount: ${formatCurrency(data.discount || 0)}
 Total: ${formatCurrency(data.total || 0)}
 ---------------------

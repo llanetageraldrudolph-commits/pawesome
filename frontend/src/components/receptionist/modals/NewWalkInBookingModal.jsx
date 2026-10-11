@@ -7,6 +7,7 @@ import {
 } from "@fortawesome/free-solid-svg-icons";
 import { apiRequest } from "../../../api/client";
 import DatePickerInput from "../../shared/DatePickerInput";
+import BookingReviewModal from "../../shared/BookingReviewModal";
 import { formatDateOnly, parseDateOnly } from "../../../utils/date";
 import "../../../styles/bookingModal.css";
 import "./NewWalkInBookingModal.css";
@@ -82,6 +83,7 @@ const NewWalkInBookingModal = ({ onClose, onSuccess }) => {
   const roomsRequestRef = useRef(0);
   const [processing, setProcessing] = useState(false);
   const [error, setError] = useState("");
+  const [reviewOpen, setReviewOpen] = useState(false);
 
   useEffect(() => {
     const previousOverflow = document.body.style.overflow;
@@ -161,6 +163,15 @@ const NewWalkInBookingModal = ({ onClose, onSuccess }) => {
     return 0;
   }, [form.bookingType, form.roomType, form.duration, selectedService]);
 
+  const vaccinationPreview = useMemo(() => {
+    const f = form.vaccinationCard;
+    return f && f.type?.startsWith("image/") ? URL.createObjectURL(f) : null;
+  }, [form.vaccinationCard]);
+
+  useEffect(() => {
+    return () => { if (vaccinationPreview) URL.revokeObjectURL(vaccinationPreview); };
+  }, [vaccinationPreview]);
+
   const handleInputChange = (event) => {
     const { name, value } = event.target;
     setForm((prev) => {
@@ -228,7 +239,8 @@ const NewWalkInBookingModal = ({ onClose, onSuccess }) => {
     return parts.join("\n") || "";
   };
 
-  const handleSubmit = async (event) => {
+  // Vaccination card is optional for hotel bookings
+  const handleSubmit = (event) => {
     event.preventDefault();
     if (!form.customerId || !form.petId || !form.appointmentDate) {
       setError("Please select a customer, pet, and appointment date.");
@@ -238,9 +250,10 @@ const NewWalkInBookingModal = ({ onClose, onSuccess }) => {
       setError("Please select a service.");
       return;
     }
-    // Vaccination card is now optional for hotel bookings
-    // Removed requirement to allow walk-in booking without vaccination card
+    setReviewOpen(true);
+  };
 
+  const confirmBooking = async () => {
     try {
       setProcessing(true);
       setError("");
@@ -315,6 +328,7 @@ const NewWalkInBookingModal = ({ onClose, onSuccess }) => {
 
       await apiRequest(endpoint, requestOptions);
 
+      setReviewOpen(false);
       setForm(initialForm);
       onSuccess();
     } catch (err) {
@@ -579,6 +593,45 @@ const NewWalkInBookingModal = ({ onClose, onSuccess }) => {
           </form>
         </div>
       </div>
+
+      <BookingReviewModal
+        open={reviewOpen}
+        onClose={() => setReviewOpen(false)}
+        onConfirm={confirmBooking}
+        loading={processing}
+        badge={`Walk-in · ${form.bookingType === "hotel" ? "Pet Hotel" : form.bookingType === "vet" ? "Veterinary" : "Grooming"}`}
+        pet={form.petName ? {
+          name: form.petName,
+          species: form.petType,
+          breed: form.breed,
+        } : null}
+        details={[
+          { label: "Customer", value: form.ownerName },
+          { label: "Service", value: form.bookingType === "hotel" ? (form.service || "Pet Hotel Stay") : (selectedService?.name || form.service) },
+          { label: "Date", value: form.appointmentDate && new Date(`${form.appointmentDate}T00:00:00`).toLocaleDateString("en-PH", { weekday: "short", month: "short", day: "numeric", year: "numeric" }) },
+          form.bookingType === "hotel"
+            ? { label: "Duration", value: "Same-day stay (10:00 AM – 6:00 PM)" }
+            : { label: "Time", value: form.appointmentTime },
+          form.bookingType === "hotel" ? { label: "Room type", value: form.roomType } : null,
+          { label: "Payment method", value: String(form.paymentMethod || "").toUpperCase() },
+          Number(form.paidAmount) > 0 ? { label: "Paid amount", value: formatCurrency(form.paidAmount) } : null,
+        ].filter(Boolean)}
+        pricing={calculatedAmount > 0 ? {
+          rows: [{
+            label: form.bookingType === "hotel"
+              ? `${form.roomType} — ${formatCurrency(roomRates[form.roomType] || calculatedAmount)}/day`
+              : selectedService?.name || "Service",
+            value: formatCurrency(calculatedAmount),
+          }],
+          total: formatCurrency(calculatedAmount),
+        } : null}
+        notes={buildNotes()}
+        attachment={form.vaccinationCard ? {
+          name: form.vaccinationCard.name,
+          previewUrl: vaccinationPreview,
+          isImage: form.vaccinationCard.type?.startsWith("image/"),
+        } : null}
+      />
     </div>
   );
 };

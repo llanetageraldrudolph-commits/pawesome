@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { showReasonPrompt } from "../../utils/alert.jsx";
+import { showReasonPrompt, STAFF_CANCEL_REASONS } from "../../utils/alert.jsx";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import {
   faCalendarAlt,
@@ -386,8 +386,10 @@ const VetAppointments = () => {
     }
 
     const reason = await showReasonPrompt(
-      "Cancel this appointment? Please provide a reason — it will be recorded.",
-      "Cancellation reason"
+      "Cancel this appointment? Please select a reason — it will be recorded.",
+      "Cancellation reason",
+      "Cancel Appointment",
+      STAFF_CANCEL_REASONS
     );
 
     if (reason === null) return;

@@ -87,7 +87,7 @@ export const exportFormalReportPDF = (config = {}) => {
   doc.setFontSize(7.5);
   doc.setTextColor(...MUTED);
   doc.text(STORE_INFO.tagline, 14, y + 5);
-  doc.text(`${STORE_INFO.address} | ${STORE_INFO.email} | ${STORE_INFO.phone}`, 14, y + 9);
+  doc.text(`${STORE_INFO.address.replace(/\n/g, " ")} | ${STORE_INFO.email} | ${STORE_INFO.phone}`, 14, y + 9);
   doc.setFont("helvetica", "bold");
   doc.setFontSize(8);
   doc.setTextColor(...DARK);

@@ -1090,13 +1090,18 @@ class BoardingController extends Controller
         }
 
         $oldStatus = $boarding->status;
-        
+
+        $cancelReason = trim((string) ($request->input('reason') ?: $request->input('cancellation_reason') ?: ''));
+
         // Initialize inventory service
         $addOnInventoryService = new BoardingAddOnInventoryService();
-        
+
         // Process cancellation and inventory restoration in transaction
-        $result = DB::transaction(function () use ($boarding, $oldStatus, $addOnInventoryService) {
-            $boarding->update(['status' => 'cancelled']);
+        $result = DB::transaction(function () use ($boarding, $oldStatus, $addOnInventoryService, $cancelReason) {
+            $boarding->update(array_filter([
+                'status' => 'cancelled',
+                'cancellation_reason' => $cancelReason !== '' ? $cancelReason : null,
+            ]));
             if ($boarding->hotelRoom && in_array($boarding->hotelRoom->status, ['reserved', 'occupied'], true)) {
                 $boarding->hotelRoom->update(['status' => 'available']);
             }
@@ -1406,6 +1411,25 @@ class BoardingController extends Controller
         } else {
             // Cash payments are verified by the cashier at the counter — no proof file.
             $boarding->update($paymentData);
+        }
+
+        // Mirror the resubmission onto the originating service request so the
+        // booking re-enters cashier verification as one consistent row.
+        if (!empty($boarding->service_request_id)) {
+            $srUpdates = [
+                'payment_status' => 'pending',
+                'payment_method' => $request->payment_method,
+                'payment_reference' => $request->payment_reference,
+                'updated_at' => now(),
+            ];
+            $freshBoarding = $boarding->fresh();
+            if (Schema::hasColumn('service_requests', 'payment_proof')) {
+                $srUpdates['payment_proof'] = $freshBoarding->payment_proof;
+            }
+            DB::table('service_requests')
+                ->where('id', $boarding->service_request_id)
+                ->where('payment_status', '!=', 'paid')
+                ->update($srUpdates);
         }
 
         WorkflowNotifier::notifyRole('cashier', 'Boarding payment proof submitted', "{$boarding->pet_name} has a pending boarding payment proof.", 'info', 'boarding', $boarding->id);

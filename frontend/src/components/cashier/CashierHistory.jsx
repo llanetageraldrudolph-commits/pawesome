@@ -85,7 +85,7 @@ const CashierHistory = () => {
     const change = Number(raw.change || raw.change_amount || 0);
 
     printReceipt({
-      title: "Official Cashier Receipt",
+      title: "Sales Invoice",
       receiptNumber: entry.reference_id || String(saleId),
       date: entry.created_at ? new Date(entry.created_at).toLocaleString("en-PH") : new Date().toLocaleString("en-PH"),
       cashier: raw.cashier_name || entry.actor || "Cashier",

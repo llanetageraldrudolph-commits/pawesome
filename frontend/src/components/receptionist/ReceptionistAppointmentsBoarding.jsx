@@ -27,7 +27,7 @@ import {
   faWrench,
 } from "@fortawesome/free-solid-svg-icons";
 import { apiRequest, getAuthenticatedFileUrl } from "../../api/client";
-import { showConfirm, showReasonPrompt } from "../../utils/alert.jsx";
+import { showConfirm, showReasonPrompt, BOOKING_REJECT_REASONS } from "../../utils/alert.jsx";
 import { exportToCSV, exportToPDF, exportToExcel } from "../../utils/reportExport";
 import { useUnifiedRequests } from "./hooks/useUnifiedRequests";
 import RowActionPopover from "../shared/RowActionPopover";
@@ -321,7 +321,7 @@ const ReceptionistAppointmentsBoarding = () => {
       } else if (action === "reject") {
         const reason = extra.reason?.trim()
           ? extra.reason.trim()
-          : await showReasonPrompt("Reject this request? Please provide a reason.");
+          : await showReasonPrompt("Reject this request? Please select a reason.", "Reject Request", "Reject", BOOKING_REJECT_REASONS);
         if (!reason) { setBusyAction(""); return; }
 
         if (item.source === "service_request" || item.serviceRequestId) {

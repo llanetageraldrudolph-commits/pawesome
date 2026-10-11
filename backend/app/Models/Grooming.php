@@ -32,6 +32,7 @@ class Grooming extends Model
         'completed_at',
         'status',
         'service_request_id',
+        'cancellation_reason',
     ];
 
     protected $casts = [

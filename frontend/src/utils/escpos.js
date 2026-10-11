@@ -83,7 +83,7 @@ function php(value) {
  */
 export function buildEscPos(opts = {}) {
   const {
-    title           = "Official Receipt",
+    title           = "Invoice",
     receiptNumber   = "",
     date            = new Date().toLocaleString("en-PH"),
     cashier         = "",
@@ -110,7 +110,8 @@ export function buildEscPos(opts = {}) {
   out += CENTER;
   out += BOLD_ON + asc(STORE_INFO.name).toUpperCase() + "\n" + BOLD_OFF;
   out += FONT_B;
-  for (const line of wrap(STORE_INFO.address, COLS_B)) out += line + "\n";
+  for (const l of STORE_INFO.address.split("\n"))
+    for (const line of wrap(l, COLS_B)) out += line + "\n";
   out += asc(STORE_INFO.email) + "\n";
   out += FONT_A;
   out += BOLD_ON + asc(title).toUpperCase() + "\n" + BOLD_OFF;

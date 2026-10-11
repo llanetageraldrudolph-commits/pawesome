@@ -14,6 +14,7 @@ use App\Models\ActivityLog;
 use App\Models\ServiceItemUsage;
 use App\Services\CustomerEmailResolver;
 use App\Services\EmailDeliveryService;
+use App\Services\ServiceCatalog;
 use App\Services\WorkflowNotifier;
 use App\Support\EmailContent;
 use Illuminate\Http\Request;
@@ -70,124 +71,12 @@ class ReceptionistRequestController extends Controller
 
     private function resolveService(ServiceRequest $serviceRequest): ?Service
     {
+        $service = ServiceCatalog::forRequest($serviceRequest);
+        if ($service) {
+            return $service;
+        }
+
         $serviceName = trim((string) $serviceRequest->service_name);
-
-        if ($serviceName !== '') {
-            $service = Service::whereRaw('LOWER(name) = ?', [strtolower($serviceName)])->first();
-
-            if ($service) {
-                return $service;
-            }
-        }
-
-        // Vet requests: match by veterinary category
-        if ($this->requestIsVet($serviceRequest)) {
-            $category = collect(['Consultation', 'Vaccination', 'Surgery', 'Dental'])
-                ->first(fn ($item) => str_contains(strtolower($serviceName), strtolower($item)));
-
-            if ($category) {
-                $service = Service::where('category', $category)->first();
-                if ($service) {
-                    return $service;
-                }
-            }
-
-            $service = Service::whereIn('category', ['Consultation', 'Vaccination', 'Surgery', 'Dental'])
-                    ->orderByRaw("CASE category WHEN 'Consultation' THEN 1 WHEN 'Vaccination' THEN 2 WHEN 'Surgery' THEN 3 WHEN 'Dental' THEN 4 ELSE 5 END")
-                    ->first();
-
-            if ($service) {
-                return $service;
-            }
-
-            $createData = [
-                'category' => 'Consultation',
-                'price' => 500,
-                'description' => 'Default veterinary consultation service for approved vet requests.',
-                'is_active' => true,
-            ];
-
-            if (!Schema::hasColumn('services', 'category')) {
-                unset($createData['category']);
-            }
-
-            if (!Schema::hasColumn('services', 'is_active')) {
-                unset($createData['is_active']);
-            }
-
-            return Service::firstOrCreate(
-                ['name' => 'Veterinary Consultation'],
-                $createData
-            );
-        }
-
-        // Grooming requests
-        if ($this->requestIsGrooming($serviceRequest)) {
-            $service = Service::whereRaw('LOWER(name) = ?', [strtolower($serviceName)])->first();
-
-            if ($service) {
-                return $service;
-            }
-
-            $service = Service::where('category', 'Grooming')->first();
-            if ($service) {
-                return $service;
-            }
-
-            $createData = [
-                'category' => 'Grooming',
-                'price' => 800,
-                'description' => 'Default grooming service for approved grooming requests.',
-                'is_active' => true,
-            ];
-
-            if (!Schema::hasColumn('services', 'category')) {
-                unset($createData['category']);
-            }
-
-            if (!Schema::hasColumn('services', 'is_active')) {
-                unset($createData['is_active']);
-            }
-
-            return Service::firstOrCreate(
-                ['name' => 'Standard Grooming'],
-                $createData
-            );
-        }
-
-        // Hotel / Boarding requests
-        if ($this->requestIsHotel($serviceRequest)) {
-            $service = Service::whereRaw('LOWER(name) = ?', [strtolower($serviceName)])->first();
-
-            if ($service) {
-                return $service;
-            }
-
-            $service = Service::where('category', 'Hotel')->first();
-            if ($service) {
-                return $service;
-            }
-
-            $createData = [
-                'category' => 'Hotel',
-                'price' => 1500,
-                'description' => 'Default pet hotel/boarding service for approved hotel requests.',
-                'is_active' => true,
-            ];
-
-            if (!Schema::hasColumn('services', 'category')) {
-                unset($createData['category']);
-            }
-
-            if (!Schema::hasColumn('services', 'is_active')) {
-                unset($createData['is_active']);
-            }
-
-            return Service::firstOrCreate(
-                ['name' => 'Pet Hotel / Boarding'],
-                $createData
-            );
-        }
 
         // Generic fallback: try to find any matching service by name, then any active service
         if ($serviceName !== '') {
@@ -314,8 +203,9 @@ class ReceptionistRequestController extends Controller
         $validated = $request->validate([
             'request_type' => 'nullable|string',
             'service_type' => 'nullable|string',
-            'customer_name' => 'required|string|max:255',
+            'customer_name' => 'nullable|string|max:255',
             'customer_email' => 'nullable|email|max:255',
+            'pet_id' => 'required|integer|exists:pets,id',
             'pet_name' => 'nullable|string|max:255',
             'service_name' => 'required|string|max:255',
             'request_date' => 'nullable|date',
@@ -323,6 +213,11 @@ class ReceptionistRequestController extends Controller
             'notes' => 'nullable|string',
             'status' => 'nullable|in:pending,scheduled,approved,rejected',
         ]);
+
+        // The linked pet record is authoritative for pet and owner identity —
+        // typed pet/customer names can drift or collide, so they only act as a
+        // fallback when the pet has no customer record.
+        $pet = Pet::with('customer')->findOrFail($validated['pet_id']);
 
         // Role-based status validation
         $user = $request->user();
@@ -332,10 +227,14 @@ class ReceptionistRequestController extends Controller
             $status = $validated['status'] ?? 'scheduled'; // Default to scheduled for receptionist/admin
         }
 
+        $requestType = $validated['request_type'] ?? $validated['service_type'] ?? 'grooming';
+
         $createData = [
-            'request_type' => $validated['request_type'] ?? $validated['service_type'] ?? 'grooming',
-            'customer_name' => $validated['customer_name'],
-            'pet_name' => $validated['pet_name'] ?? null,
+            'request_type' => $requestType,
+            'pet_id' => $pet->id,
+            'pet_name' => $pet->name,
+            'customer_id' => $pet->customer?->user_id,
+            'customer_name' => $pet->customer?->name ?? $validated['customer_name'] ?? 'Unknown Customer',
             'service_name' => $validated['service_name'],
             'request_date' => $validated['request_date'] ?? null,
             'request_time' => $validated['request_time'] ?? null,
@@ -344,8 +243,15 @@ class ReceptionistRequestController extends Controller
             'payment_status' => 'pending',
         ];
 
+        if (Schema::hasColumn('service_requests', 'price')) {
+            $createData['price'] = ServiceCatalog::priceFor(
+                $validated['service_name'],
+                ServiceCatalog::bucketFor($requestType)
+            ) ?: null;
+        }
+
         if (Schema::hasColumn('service_requests', 'customer_email')) {
-            $createData['customer_email'] = $validated['customer_email'] ?? null;
+            $createData['customer_email'] = $pet->customer?->email ?? $validated['customer_email'] ?? null;
         }
 
         $serviceRequest = ServiceRequest::create($createData);
@@ -479,10 +385,22 @@ class ReceptionistRequestController extends Controller
                     );
 
                     if (!$grooming->wasRecentlyCreated) {
-                        $grooming->update([
-                            'status' => 'approved',
-                            'payment_status' => 'unpaid',
-                        ]);
+                        $groomingUpdates = ['status' => 'approved'];
+
+                        if (($grooming->payment_status ?? 'unpaid') !== 'paid') {
+                            $groomingUpdates['payment_status'] = 'unpaid';
+                        }
+
+                        // Repair records auto-created before a price was
+                        // resolved — a payable booking must never sit at ₱0.
+                        if ($price > 0 && (float) ($grooming->total_amount ?? $grooming->amount ?? 0) <= 0) {
+                            $groomingUpdates['amount'] = $price;
+                            $groomingUpdates['base_amount'] = $price;
+                            $groomingUpdates['total_amount'] = $price;
+                            $groomingUpdates['balance_due'] = $price;
+                        }
+
+                        $grooming->update($groomingUpdates);
                     }
 
                     // Auto-create base service billing item so groomer sees the service fee
@@ -509,6 +427,13 @@ class ReceptionistRequestController extends Controller
                             'used_by' => Auth::id(),
                         ]);
                     }
+
+                    // Persist the resolved payable amount on the request so
+                    // the cashier queue and settlement never see ₱0.
+                    if ($price > 0 && (float) ($serviceRequest->price ?? 0) <= 0) {
+                        $serviceRequest->price = $price;
+                        $serviceRequest->save();
+                    }
                 }
             }
 
@@ -519,6 +444,16 @@ class ReceptionistRequestController extends Controller
                     $checkOut = $serviceRequest->check_out_date;
                     if (!$checkOut && $checkIn) {
                         $checkOut = Carbon::parse($checkIn)->addDay()->toDateString();
+                    }
+
+                    // Resolve the payable total: persisted request total →
+                    // room rate × nights → catalog default. Never leaves ₱0.
+                    $boardingTotal = (float) ($serviceRequest->total_amount ?? 0);
+                    if ($boardingTotal <= 0 && is_numeric($serviceRequest->daily_rate ?? null)) {
+                        $boardingTotal = (float) $serviceRequest->daily_rate * max(1, (int) ($serviceRequest->total_days ?? 1));
+                    }
+                    if ($boardingTotal <= 0) {
+                        $boardingTotal = ServiceCatalog::priceFor($serviceRequest->service_name, 'hotel');
                     }
 
                     $boarding = Boarding::firstOrCreate(
@@ -536,7 +471,7 @@ class ReceptionistRequestController extends Controller
                             'room_type' => $serviceRequest->room_type,
                             'rate_per_day' => $serviceRequest->daily_rate,
                             'number_of_days' => $serviceRequest->total_days ?? 1,
-                            'total_amount' => $serviceRequest->total_amount ?? 0,
+                            'total_amount' => $boardingTotal,
                             'status' => 'approved',
                             'payment_status' => 'unpaid',
                             'notes' => $serviceRequest->notes,
@@ -545,10 +480,17 @@ class ReceptionistRequestController extends Controller
                     );
 
                     if (!$boarding->wasRecentlyCreated) {
-                        $boarding->update([
-                            'status' => 'approved',
-                            'payment_status' => 'unpaid',
-                        ]);
+                        $boardingUpdates = ['status' => 'approved'];
+
+                        if (($boarding->payment_status ?? 'unpaid') !== 'paid') {
+                            $boardingUpdates['payment_status'] = 'unpaid';
+                        }
+
+                        if ($boardingTotal > 0 && (float) ($boarding->total_amount ?? 0) <= 0) {
+                            $boardingUpdates['total_amount'] = $boardingTotal;
+                        }
+
+                        $boarding->update($boardingUpdates);
                     }
 
                     // Keep the boarding's itemized bill anchored to its
@@ -558,6 +500,21 @@ class ReceptionistRequestController extends Controller
                         ServiceItemUsage::SERVICE_BOARDING,
                         (int) $boarding->id
                     );
+
+                    if ($boardingTotal > 0) {
+                        $requestUpdates = [];
+                        if (Schema::hasColumn('service_requests', 'total_amount')
+                            && (float) ($serviceRequest->total_amount ?? 0) <= 0) {
+                            $requestUpdates['total_amount'] = $boardingTotal;
+                        }
+                        if (Schema::hasColumn('service_requests', 'price')
+                            && (float) ($serviceRequest->price ?? 0) <= 0) {
+                            $requestUpdates['price'] = $boardingTotal;
+                        }
+                        if ($requestUpdates) {
+                            $serviceRequest->update($requestUpdates);
+                        }
+                    }
                 }
             }
 
@@ -784,10 +741,22 @@ class ReceptionistRequestController extends Controller
                 );
 
                 if (!$grooming->wasRecentlyCreated) {
-                    $grooming->update([
-                        'status' => 'approved',
-                        'payment_status' => 'unpaid',
-                    ]);
+                    $groomingUpdates = ['status' => 'approved'];
+
+                    if (($grooming->payment_status ?? 'unpaid') !== 'paid') {
+                        $groomingUpdates['payment_status'] = 'unpaid';
+                    }
+
+                    // Repair records auto-created before a price was
+                    // resolved — a payable booking must never sit at ₱0.
+                    if ($price > 0 && (float) ($grooming->total_amount ?? $grooming->amount ?? 0) <= 0) {
+                        $groomingUpdates['amount'] = $price;
+                        $groomingUpdates['base_amount'] = $price;
+                        $groomingUpdates['total_amount'] = $price;
+                        $groomingUpdates['balance_due'] = $price;
+                    }
+
+                    $grooming->update($groomingUpdates);
                 }
 
                 // Auto-create base service billing item so groomer sees the service fee
@@ -814,6 +783,13 @@ class ReceptionistRequestController extends Controller
                         'used_by' => Auth::id(),
                     ]);
                 }
+
+                // Persist the resolved payable amount on the request so
+                // the cashier queue and settlement never see ₱0.
+                if ($price > 0 && (float) ($serviceRequest->price ?? 0) <= 0) {
+                    $serviceRequest->price = $price;
+                    $serviceRequest->save();
+                }
             }
         }
 
@@ -824,6 +800,16 @@ class ReceptionistRequestController extends Controller
                 $checkOut = $serviceRequest->check_out_date;
                 if (!$checkOut && $checkIn) {
                     $checkOut = Carbon::parse($checkIn)->addDay()->toDateString();
+                }
+
+                // Resolve the payable total: persisted request total →
+                // room rate × nights → catalog default. Never leaves ₱0.
+                $boardingTotal = (float) ($serviceRequest->total_amount ?? 0);
+                if ($boardingTotal <= 0 && is_numeric($serviceRequest->daily_rate ?? null)) {
+                    $boardingTotal = (float) $serviceRequest->daily_rate * max(1, (int) ($serviceRequest->total_days ?? 1));
+                }
+                if ($boardingTotal <= 0) {
+                    $boardingTotal = ServiceCatalog::priceFor($serviceRequest->service_name, 'hotel');
                 }
 
                 $boarding = Boarding::firstOrCreate(
@@ -841,7 +827,7 @@ class ReceptionistRequestController extends Controller
                         'room_type' => $serviceRequest->room_type,
                         'rate_per_day' => $serviceRequest->daily_rate,
                         'number_of_days' => $serviceRequest->total_days ?? 1,
-                        'total_amount' => $serviceRequest->total_amount ?? 0,
+                        'total_amount' => $boardingTotal,
                         'status' => 'approved',
                         'payment_status' => 'unpaid',
                         'notes' => $serviceRequest->notes,
@@ -850,10 +836,37 @@ class ReceptionistRequestController extends Controller
                 );
 
                 if (!$boarding->wasRecentlyCreated) {
-                    $boarding->update([
-                        'status' => 'approved',
-                        'payment_status' => 'unpaid',
-                    ]);
+                    $boardingUpdates = ['status' => 'approved'];
+
+                    if (($boarding->payment_status ?? 'unpaid') !== 'paid') {
+                        $boardingUpdates['payment_status'] = 'unpaid';
+                    }
+
+                    if ($boardingTotal > 0 && (float) ($boarding->total_amount ?? 0) <= 0) {
+                        $boardingUpdates['total_amount'] = $boardingTotal;
+                    }
+
+                    $boarding->update($boardingUpdates);
+                }
+
+                \App\Services\ServiceBillingService::ensureBaseServiceItem(
+                    ServiceItemUsage::SERVICE_BOARDING,
+                    (int) $boarding->id
+                );
+
+                if ($boardingTotal > 0) {
+                    $requestUpdates = [];
+                    if (Schema::hasColumn('service_requests', 'total_amount')
+                        && (float) ($serviceRequest->total_amount ?? 0) <= 0) {
+                        $requestUpdates['total_amount'] = $boardingTotal;
+                    }
+                    if (Schema::hasColumn('service_requests', 'price')
+                        && (float) ($serviceRequest->price ?? 0) <= 0) {
+                        $requestUpdates['price'] = $boardingTotal;
+                    }
+                    if ($requestUpdates) {
+                        $serviceRequest->update($requestUpdates);
+                    }
                 }
             }
         }

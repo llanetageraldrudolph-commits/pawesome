@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { showConfirm, showReasonPrompt } from "../../utils/alert.jsx";
+import { showConfirm, showReasonPrompt, BOOKING_REJECT_REASONS } from "../../utils/alert.jsx";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import {
   faCalendarAlt,
@@ -235,6 +235,11 @@ const Grooming = () => {
     }
   }, []);
 
+  const handleBillingRefresh = useCallback(
+    () => fetchAppointments({ silent: true }),
+    [fetchAppointments]
+  );
+
   useEffect(() => {
     fetchAppointments();
 
@@ -254,8 +259,10 @@ const Grooming = () => {
     let rejectionReason = null;
     if (newStatus === "rejected") {
       rejectionReason = await showReasonPrompt(
-        "Reject this grooming appointment? Please provide a reason.",
-        "Reject Grooming Appointment"
+        "Reject this grooming appointment? Please select a reason.",
+        "Reject Grooming Appointment",
+        "Reject",
+        BOOKING_REJECT_REASONS
       );
       if (!rejectionReason) return;
     }
@@ -826,7 +833,7 @@ const Grooming = () => {
                   serviceType="grooming"
                   serviceId={selectedAppointment.id}
                   petId={selectedAppointment.pet_id || selectedAppointment.pet?.id}
-                  onBillingUpdate={() => fetchAppointments({ silent: true })}
+                  onBillingUpdate={handleBillingRefresh}
                 />
               </div>
             )}

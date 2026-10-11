@@ -5,6 +5,7 @@ namespace App\Services;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 use App\Models\ActivityLog;
 use App\Models\ServiceItemUsage;
 use App\Models\ServiceRequest;
@@ -99,7 +100,10 @@ class PaymentVerificationService
                 if ($type === 'service_request' || $type === 'service') {
                     $sr = DB::table('service_requests')->where('id', $id)->lockForUpdate()->first();
                     if (!$sr) return ['success' => false, 'message' => 'Service request not found', 'status' => 404];
-                    if (($sr->payment_status ?? 'unpaid') !== 'pending') {
+                    // 'unpaid'/'rejected' are accepted for counter collections —
+                    // a rejected online proof or a never-submitted booking can
+                    // still be settled with cash at the desk.
+                    if (!in_array($sr->payment_status ?? 'unpaid', ['pending', 'unpaid', 'rejected'], true)) {
                         return ['success' => false, 'message' => 'Only pending payment proofs can be verified', 'status' => 422, 'payment_status' => $sr->payment_status];
                     }
 
@@ -113,6 +117,7 @@ class PaymentVerificationService
                         'cashier_remarks' => $request->input('cashier_remarks', 'Payment verified by cashier'),
                         'receipt_number' => $receiptNumber,
                         'reference_number' => $referenceNumber,
+                        'payment_method' => $request->input('payment_method') ?? $sr->payment_method,
                     ]);
 
                     $this->markLinkedServiceAsPaidFromRequest($sr, $id, $receiptNumber);
@@ -241,6 +246,8 @@ class PaymentVerificationService
                         'rejected_at' => now(),
                         'rejection_reason' => $rejectionReason,
                     ]);
+
+                    $this->rejectLinkedRecordFromRequest($sr, $rejectionReason);
 
                     WorkflowNotifier::notifyEmail($sr->customer_email ?? null, 'Payment Rejected', "Your payment for {$sr->service_name} was rejected. Reason: {$rejectionReason}", 'error', 'service_request', $id);
 
@@ -551,10 +558,11 @@ class PaymentVerificationService
             return ['success' => false, 'message' => 'Payment record not found', 'status' => 404];
         }
 
-        // 'unpaid' is accepted for counter collections (cash at the desk —
-        // no uploaded proof), matching the established appointment flow.
-        $allowedStatuses = in_array($table, ['appointments', 'boardings', 'groomings'], true)
-            ? ['pending', 'unpaid']
+        // 'unpaid'/'rejected' are accepted for counter collections (cash at
+        // the desk supersedes a missing or rejected online proof), matching
+        // the established appointment flow.
+        $allowedStatuses = in_array($table, ['appointments', 'boardings', 'groomings', 'medical_confinements'], true)
+            ? ['pending', 'unpaid', 'rejected']
             : ['pending'];
         if (!in_array($record->payment_status ?? 'unpaid', $allowedStatuses)) {
             return ['success' => false, 'message' => 'Only pending payment proofs can be verified', 'status' => 422, 'payment_status' => $record->payment_status ?? 'unpaid'];
@@ -572,6 +580,12 @@ class PaymentVerificationService
             'updated_at' => now(),
         ];
 
+        // Persist the method the cashier actually collected with — a counter
+        // collection may supersede a stale online method on the record.
+        if (Schema::hasColumn($table, 'payment_method') && $request->input('payment_method')) {
+            $updateData['payment_method'] = $request->input('payment_method');
+        }
+
         // Note: status is not set to 'completed' here; the service provider
         // completes the appointment after medical record finalization.
 
@@ -580,6 +594,11 @@ class PaymentVerificationService
         }
 
         DB::table($table)->where('id', $id)->update($updateData);
+
+        // Mirror the settled state onto the booking's service_request so the
+        // customer's request list reflects payment regardless of which row
+        // the cashier settled.
+        $this->markServiceRequestPaidFromLinked($table, $record, $receiptNumber, $referenceNumber);
 
         $billingResult = $this->syncServiceBillingForVerifiedPayment($table, $id, Auth::id(), $receiptNumber);
 
@@ -651,8 +670,9 @@ class PaymentVerificationService
             return ['success' => false, 'message' => 'Payment record not found', 'status' => 404];
         }
 
-        $allowedStatuses = $table === 'appointments' ? ['pending', 'unpaid'] : ['pending'];
-        if (!in_array(($record->payment_status ?? 'unpaid'), $allowedStatuses)) {
+        // Only a pending submitted proof can be rejected — there is nothing
+        // to reject on an unpaid or already-processed record.
+        if (($record->payment_status ?? 'unpaid') !== 'pending') {
             return ['success' => false, 'message' => 'Only pending payment proofs can be rejected', 'status' => 422, 'payment_status' => $record->payment_status ?? 'unpaid'];
         }
 
@@ -664,6 +684,8 @@ class PaymentVerificationService
             'cashier_remarks' => $request->input('cashier_remarks'),
             'updated_at' => now(),
         ]);
+
+        $this->rejectServiceRequestFromLinked($table, $record, $rejectionReason);
 
         WorkflowNotifier::notifyEmail($record->customer_email ?? null, 'Payment rejected', 'Your payment proof was rejected. Please upload a corrected proof.', 'warning', $table, $id);
 
@@ -690,10 +712,13 @@ class PaymentVerificationService
     {
         $requestType = $serviceRequest->request_type ?? $serviceRequest->type ?? null;
 
-        $linked = match ($requestType) {
-            'vet', 'veterinary' => ['appointments', 'veterinary'],
+        // bucketFor normalizes the request_type spellings used across the
+        // codebase — 'hotel', 'pet hotel', 'boarding', etc. — so a hotel-typed
+        // request still marks its linked boarding paid.
+        $linked = match (ServiceCatalog::bucketFor($requestType)) {
+            'vet' => ['appointments', 'veterinary'],
             'grooming' => ['groomings', 'grooming'],
-            'boarding' => ['boardings', 'boarding'],
+            'hotel' => ['boardings', 'boarding'],
             default => null,
         };
 
@@ -717,5 +742,101 @@ class PaymentVerificationService
         ]);
 
         ServiceBillingService::markBaseServiceAsPaid($serviceType, $record->id, Auth::id(), $receiptNumber);
+    }
+
+    /**
+     * When a linked service record (grooming/boarding/appointment) is
+     * verified directly in the cashier queue, mirror the settled state onto
+     * its originating service_request. Without this the customer-facing
+     * bookings list stays unpaid/rejected forever even though the payment
+     * was collected and settled.
+     */
+    private function markServiceRequestPaidFromLinked(string $table, object $record, string $receiptNumber, ?string $referenceNumber): void
+    {
+        if (!in_array($table, ['groomings', 'boardings', 'appointments'], true)) {
+            return;
+        }
+
+        $serviceRequestId = $record->service_request_id ?? null;
+        if (!$serviceRequestId || !Schema::hasColumn('service_requests', 'id')) {
+            return;
+        }
+
+        $updates = [
+            'payment_status' => 'paid',
+            'paid_at' => now(),
+            'verified_by' => Auth::id(),
+            'verified_at' => now(),
+            'receipt_number' => $receiptNumber,
+            'updated_at' => now(),
+        ];
+
+        $reference = $referenceNumber ?? $record->reference_number ?? $record->payment_reference ?? null;
+        if ($reference) {
+            $updates['reference_number'] = $reference;
+        }
+
+        // Never downgrade an already-settled request; rejected/unpaid/pending
+        // rows are superseded by the verified payment on the linked record.
+        DB::table('service_requests')->where('id', $serviceRequestId)
+            ->where('payment_status', '!=', 'paid')
+            ->update($updates);
+    }
+
+    /**
+     * Rejecting a service_request's proof also rejects the linked record's
+     * copy of that submission — but only while the sibling is itself
+     * 'pending'. An 'unpaid' linked record stays a valid counter-collection
+     * row so the rejected booking can still be settled at the desk.
+     */
+    private function rejectLinkedRecordFromRequest($serviceRequest, string $reason): void
+    {
+        $table = match (ServiceCatalog::bucketFor($serviceRequest->request_type ?? $serviceRequest->type ?? null)) {
+            'vet' => 'appointments',
+            'grooming' => 'groomings',
+            'hotel' => 'boardings',
+            default => null,
+        };
+
+        if (!$table || !Schema::hasColumn($table, 'service_request_id')) {
+            return;
+        }
+
+        DB::table($table)->where('service_request_id', $serviceRequest->id)
+            ->where('payment_status', 'pending')
+            ->update([
+                'payment_status' => 'rejected',
+                'rejected_by' => Auth::id(),
+                'rejected_at' => now(),
+                'rejection_reason' => $reason,
+                'updated_at' => now(),
+            ]);
+    }
+
+    /**
+     * Mirror of {@see rejectLinkedRecordFromRequest}: rejecting a linked
+     * record's pending proof rejects the service_request's copy too, so the
+     * customer's bookings view shows the rejection and offers resubmit.
+     */
+    private function rejectServiceRequestFromLinked(string $table, object $record, string $reason): void
+    {
+        if (!in_array($table, ['groomings', 'boardings', 'appointments'], true)) {
+            return;
+        }
+
+        $serviceRequestId = $record->service_request_id ?? null;
+        if (!$serviceRequestId) {
+            return;
+        }
+
+        DB::table('service_requests')->where('id', $serviceRequestId)
+            ->where('payment_status', 'pending')
+            ->update([
+                'payment_status' => 'rejected',
+                'rejected_by' => Auth::id(),
+                'rejected_at' => now(),
+                'rejection_reason' => $reason,
+                'updated_at' => now(),
+            ]);
     }
 }

@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import Swal from "sweetalert2";
+import { showReasonPrompt, ORDER_REASONS } from "../../utils/alert.jsx";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import {
   faBan,
@@ -350,21 +351,12 @@ export default function ReceptionistCustomerOrders() {
   };
 
   const rejectOrder = async (orderId) => {
-    const { value: reason } = await Swal.fire({
-      icon: "warning",
-      title: "Reject Order",
-      input: "textarea",
-      inputLabel: "Rejection Reason",
-      inputPlaceholder: "Please provide a clear reason for rejection.",
-      inputValidator: (value) => {
-        if (!value) return "Rejection reason is required.";
-        return null;
-      },
-      showCancelButton: true,
-      confirmButtonText: "Reject Order",
-      cancelButtonText: "Cancel",
-      confirmButtonColor: "#ef4444",
-    });
+    const reason = await showReasonPrompt(
+      "Please select a clear reason for rejecting this order.",
+      "Reject Order",
+      "Reject Order",
+      ORDER_REASONS
+    );
 
     if (!reason) return;
 
@@ -402,21 +394,12 @@ export default function ReceptionistCustomerOrders() {
   };
 
   const cancelOrder = async (orderId) => {
-    const { value: reason } = await Swal.fire({
-      icon: "warning",
-      title: "Cancel Order",
-      input: "textarea",
-      inputLabel: "Cancellation Reason",
-      inputPlaceholder: "Please provide a clear reason for cancellation.",
-      inputValidator: (value) => {
-        if (!value) return "Cancellation reason is required.";
-        return null;
-      },
-      showCancelButton: true,
-      confirmButtonText: "Cancel Order",
-      cancelButtonText: "Back",
-      confirmButtonColor: "#f59e0b",
-    });
+    const reason = await showReasonPrompt(
+      "Please select a clear reason for cancelling this order.",
+      "Cancel Order",
+      "Cancel Order",
+      ORDER_REASONS
+    );
 
     if (!reason) return;
 

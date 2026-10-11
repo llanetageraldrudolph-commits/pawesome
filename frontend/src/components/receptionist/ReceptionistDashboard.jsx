@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { showConfirm, showWarning, showError, showSuccess, showReasonPrompt } from "../../utils/alert.jsx";
+import { showConfirm, showWarning, showError, showSuccess, showReasonPrompt, BOOKING_REJECT_REASONS } from "../../utils/alert.jsx";
 import {
   FaCalendarAlt,
   FaCalendarCheck,
@@ -295,8 +295,10 @@ const ReceptionistDashboard = () => {
     let rejectionReason = null;
     if (newStatus === "rejected") {
       rejectionReason = await showReasonPrompt(
-        `Reject ${request.id}? Please provide a reason.`,
-        "Reject Request"
+        `Reject ${request.id}? Please select a reason.`,
+        "Reject Request",
+        "Reject",
+        BOOKING_REJECT_REASONS
       );
       if (!rejectionReason) return;
     }

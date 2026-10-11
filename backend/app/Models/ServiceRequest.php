@@ -36,6 +36,7 @@ class ServiceRequest extends Model
         'rejected_by',
         'rejected_at',
         'rejection_reason',
+        'cancellation_reason',
         'receptionist_remarks',
         'payment_status',
         'payment_method',

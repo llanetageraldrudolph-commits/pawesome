@@ -1,9 +1,14 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { apiRequest } from "../../../api/client";
 import { getToken } from "../../../utils/auth";
-import { showSuccess, showError, showReasonPrompt, showConfirm, showAlert } from "../../../utils/alert.jsx";
+import { showSuccess, showError, showReasonPrompt, showConfirm, showAlert, PAYMENT_REJECT_REASONS } from "../../../utils/alert.jsx";
 import { printReceipt as printReceiptUtil } from "../../../utils/receiptPrinter";
 import { exportToCSV as exportCSVUtil, exportToPDF, exportToExcel } from "../../../utils/reportExport";
+
+// Unique UI key per queue row — the queue unions five tables, so bare
+// numeric ids collide across types (e.g. boarding #3 vs service_request #3).
+export const paymentKey = (p) =>
+  `${p?.payable_type || p?.type || "payment"}-${p?.id}`;
 
 export const usePaymentApprovals = (user) => {
   const [requests, setRequests] = useState([]);
@@ -191,7 +196,7 @@ export const usePaymentApprovals = (user) => {
     }
 
     printReceiptUtil({
-      title: "Official Payment Receipt",
+      title: "Invoice",
       receiptNumber,
       date: new Date().toLocaleString("en-PH"),
       cashier,
@@ -217,7 +222,7 @@ export const usePaymentApprovals = (user) => {
     if (!confirmed) return;
 
     try {
-      setActionLoading(`${payment.id}-verify`);
+      setActionLoading(`${paymentKey(payment)}-verify`);
       const data = await apiRequest(`/cashier/payment-requests/${payment.id}/verify`, "POST", {
         type: payment.payable_type || payment.type || payment.payment_source || "service_request",
         cashier_remarks: "Payment verified by cashier",
@@ -238,19 +243,31 @@ export const usePaymentApprovals = (user) => {
       }
     } catch (err) {
       console.error("Failed to verify payment:", err);
-      showError(err.message || "Failed to verify payment.");
+      if ((err?.message || "").toLowerCase().includes("only pending")) {
+        showAlert("This payment was already processed. Refreshing the queue.");
+        fetchRequests({ silent: true });
+      } else {
+        showError(err.message || "Failed to verify payment.");
+      }
     } finally {
       setActionLoading(null);
     }
   }, [fetchRequests, printReceipt]);
 
-  // Reject single payment
+  // Reject single payment — only a pending proof can be rejected; an
+  // 'unpaid' record is awaiting payment, not approval, and an already
+  // processed record is stale.
   const rejectPayment = useCallback(async (payment) => {
-    const cashier_remarks = await showReasonPrompt("Reason for rejecting this payment proof:", "Reject Payment");
+    if ((payment.payment_status || "").toLowerCase() !== "pending") {
+      showAlert("Only payments with a submitted proof can be rejected.");
+      return;
+    }
+
+    const cashier_remarks = await showReasonPrompt("Reason for rejecting this payment proof:", "Reject Payment", "Reject", PAYMENT_REJECT_REASONS);
     if (!cashier_remarks) return;
 
     try {
-      setActionLoading(`${payment.id}-reject`);
+      setActionLoading(`${paymentKey(payment)}-reject`);
       const data = await apiRequest(`/cashier/payment-requests/${payment.id}/reject`, "POST", {
         type: payment.payable_type || payment.type || payment.payment_source || "service_request",
         cashier_remarks,
@@ -265,7 +282,12 @@ export const usePaymentApprovals = (user) => {
       }
     } catch (err) {
       console.error("Failed to reject payment:", err);
-      showError(err.message || "Failed to reject payment.");
+      if ((err?.message || "").toLowerCase().includes("only pending")) {
+        showAlert("This payment was already processed. Refreshing the queue.");
+        fetchRequests({ silent: true });
+      } else {
+        showError(err.message || "Failed to reject payment.");
+      }
     } finally {
       setActionLoading(null);
     }
@@ -283,10 +305,12 @@ export const usePaymentApprovals = (user) => {
     let successCount = 0;
     for (const id of selectedIds) {
       try {
-        const payment = requests.find(r => r.id === id);
-        if (!payment) continue;
-        
-        const data = await apiRequest(`/cashier/payment-requests/${id}/verify`, "POST", {
+        const payment = requests.find(r => paymentKey(r) === id);
+        // 'pending' (proof submitted) and 'unpaid' (counter collection) are
+        // the only actionable states — skip stale/already-processed rows.
+        if (!payment || !["pending", "unpaid"].includes((payment.payment_status || "").toLowerCase())) continue;
+
+        const data = await apiRequest(`/cashier/payment-requests/${payment.id}/verify`, "POST", {
           type: payment.payable_type || payment.type || payment.payment_source || "service_request",
           cashier_remarks: "Payment verified by cashier (bulk)",
         });
@@ -302,20 +326,27 @@ export const usePaymentApprovals = (user) => {
     fetchRequests({ silent: true });
   }, [selectedIds, requests, fetchRequests]);
 
-  // Bulk reject
+  // Bulk reject — only pending proofs are rejectable
   const bulkReject = useCallback(async () => {
-    if (selectedIds.length === 0) return;
-    
-    const cashier_remarks = await showReasonPrompt(`Reason for rejecting ${selectedIds.length} payment${selectedIds.length > 1 ? 's' : ''}:`, "Reject Payments");
+    const pendingIds = selectedIds.filter((id) => {
+      const payment = requests.find((r) => paymentKey(r) === id);
+      return (payment?.payment_status || "").toLowerCase() === "pending";
+    });
+    if (pendingIds.length === 0) {
+      showAlert("Only payments with a submitted proof can be rejected.");
+      return;
+    }
+
+    const cashier_remarks = await showReasonPrompt(`Reason for rejecting ${pendingIds.length} payment${pendingIds.length > 1 ? 's' : ''}:`, "Reject Payments", "Reject", PAYMENT_REJECT_REASONS);
     if (!cashier_remarks) return;
 
     let successCount = 0;
-    for (const id of selectedIds) {
+    for (const id of pendingIds) {
       try {
-        const payment = requests.find(r => r.id === id);
+        const payment = requests.find(r => paymentKey(r) === id);
         if (!payment) continue;
-        
-        const data = await apiRequest(`/cashier/payment-requests/${id}/reject`, "POST", {
+
+        const data = await apiRequest(`/cashier/payment-requests/${payment.id}/reject`, "POST", {
           type: payment.payable_type || payment.type || payment.payment_source || "service_request",
           cashier_remarks,
           rejection_reason: cashier_remarks,
@@ -379,11 +410,11 @@ export const usePaymentApprovals = (user) => {
   }, []);
 
   const selectAll = useCallback(() => {
-    const allSelected = filteredRequests.every(r => selectedIds.includes(r.id));
+    const allSelected = filteredRequests.every(r => selectedIds.includes(paymentKey(r)));
     if (allSelected) {
       setSelectedIds([]);
     } else {
-      setSelectedIds(filteredRequests.map(r => r.id));
+      setSelectedIds(filteredRequests.map(paymentKey));
     }
   }, [filteredRequests, selectedIds]);
 

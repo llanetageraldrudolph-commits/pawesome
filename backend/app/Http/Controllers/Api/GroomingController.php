@@ -7,6 +7,7 @@ use App\Models\Grooming;
 use App\Models\ServiceItemUsage;
 use App\Services\GroomingInventoryService;
 use App\Services\ServiceBillingService;
+use App\Services\ServiceCatalog;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Validator;
@@ -34,12 +35,17 @@ class GroomingController extends Controller
             'amount' => 'nullable|numeric',
         ]);
 
+        $resolvedAmount = isset($validated['amount']) && is_numeric($validated['amount'])
+            ? (float) $validated['amount']
+            : ServiceCatalog::priceFor($validated['service'], 'grooming');
+
         $validated['status'] = 'pending';
         $validated['payment_status'] = 'unpaid';
-        $validated['base_amount'] = $validated['amount'] ?? 0;
-        $validated['total_amount'] = $validated['amount'] ?? 0;
+        $validated['amount'] = $resolvedAmount;
+        $validated['base_amount'] = $resolvedAmount;
+        $validated['total_amount'] = $resolvedAmount;
         $validated['amount_paid'] = 0;
-        $validated['balance_due'] = $validated['amount'] ?? 0;
+        $validated['balance_due'] = $resolvedAmount;
 
         $grooming = Grooming::create($validated);
 

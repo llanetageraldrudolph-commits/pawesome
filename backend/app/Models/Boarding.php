@@ -60,6 +60,7 @@ class Boarding extends Model
         'rejected_by',
         'rejected_at',
         'rejection_reason',
+        'cancellation_reason',
         'confirmed_at',
         'actual_check_in',
         'checked_in_by',

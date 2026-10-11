@@ -22,7 +22,7 @@ import "../../styles/bookingModal.css";
 import "./ReceptionistHotelBookings.css";
 import { apiRequest, getAuthenticatedFileUrl } from "../../api/client";
 import { exportToCSV, exportToPDF, exportToExcel } from "../../utils/reportExport";
-import { showError, showReasonPrompt } from "../../utils/alert.jsx";
+import { showError, showReasonPrompt, BOOKING_REJECT_REASONS } from "../../utils/alert.jsx";
 import DatePickerInput from "../../components/shared/DatePickerInput";
 import { formatDateOnly, parseDateOnly } from "../../utils/date";
 import PetAvatar from "../shared/PetAvatar";
@@ -167,6 +167,11 @@ const ReceptionistHotelBookings = () => {
     }
   }, []);
 
+  const handleBillingRefresh = useCallback(
+    () => fetchBookings({ silent: true }),
+    [fetchBookings]
+  );
+
   useEffect(() => {
     fetchBookings();
     fetchRooms();
@@ -239,8 +244,10 @@ const ReceptionistHotelBookings = () => {
 
   const rejectBooking = async (booking) => {
     const reason = await showReasonPrompt(
-      `Reject booking ${booking.id ? `#${booking.id}` : ""} for ${booking.pet?.name || booking.pet_name || "this pet"}? Please provide a reason.`,
-      "Reject Booking"
+      `Reject booking ${booking.id ? `#${booking.id}` : ""} for ${booking.pet?.name || booking.pet_name || "this pet"}? Please select a reason.`,
+      "Reject Booking",
+      "Reject",
+      BOOKING_REJECT_REASONS
     );
     if (!reason) return;
     await runAction(
@@ -1130,7 +1137,7 @@ const ReceptionistHotelBookings = () => {
                       serviceType="boarding"
                       serviceId={selectedBooking.id}
                       petId={selectedBooking.pet_id}
-                      onBillingUpdate={() => fetchBookings({ silent: true })}
+                      onBillingUpdate={handleBillingRefresh}
                     />
                   </div>
                 )}

@@ -372,7 +372,8 @@ class P1SecurityIntegrityTest extends TestCase
 
     public function test_service_request_binds_email_to_account_and_price_to_service(): void
     {
-        [$user] = $this->verifiedCustomer(['email' => 'real-customer@example.com']);
+        [$user, $customer] = $this->verifiedCustomer(['email' => 'real-customer@example.com']);
+        $pet = Pet::create(['customer_id' => $customer->id, 'name' => 'Buddy', 'species' => 'dog']);
         Service::create([
             'name' => 'Vet Consultation',
             'category' => 'Consultation',
@@ -383,6 +384,7 @@ class P1SecurityIntegrityTest extends TestCase
         $response = $this->postJson('/api/customer/requests', [
             'customer_name' => $user->name,
             'customer_email' => 'attacker@example.com', // must be ignored
+            'pet_id' => $pet->id,
             'pet_name' => 'Buddy',
             'request_type' => 'veterinary',
             'service_name' => 'Vet Consultation',
@@ -406,7 +408,8 @@ class P1SecurityIntegrityTest extends TestCase
 
     public function test_hotel_request_computes_total_from_room_rate_and_nights(): void
     {
-        [$user] = $this->verifiedCustomer();
+        [$user, $customer] = $this->verifiedCustomer();
+        $pet = Pet::create(['customer_id' => $customer->id, 'name' => 'Buddy', 'species' => 'dog']);
         $room = BoardingRoom::create([
             'room_code' => 'P1-ROOM',
             'room_name' => 'Standard Dog Room',
@@ -421,6 +424,7 @@ class P1SecurityIntegrityTest extends TestCase
 
         $response = $this->postJson('/api/customer/requests', [
             'customer_name' => $user->name,
+            'pet_id' => $pet->id,
             'pet_name' => 'Buddy',
             'request_type' => 'hotel',
             'requested_date' => now()->addDay()->toDateString(),

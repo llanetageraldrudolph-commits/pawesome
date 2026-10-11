@@ -69,9 +69,15 @@ class EmailServiceWorkflowTest extends TestCase
             'is_active' => true,
         ]);
 
+        $pet = Pet::create([
+            'customer_id' => Customer::where('user_id', $user->id)->firstOrFail()->id,
+            'name' => 'Buddy',
+            'species' => 'dog',
+        ]);
+
         $this->postJson('/api/customer/requests', [
             'customer_name' => $user->name,
-            'pet_name' => 'Buddy',
+            'pet_id' => $pet->id,
             'request_type' => 'grooming',
             'service_name' => 'Full Groom',
             'requested_date' => now()->addDay()->toDateString(),

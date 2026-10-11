@@ -250,7 +250,7 @@ const CustomerPayments = () => {
         const serviceName = receipt.service_type || receipt.request_type || receipt.service_name || "Service";
 
         printReceipt({
-          title: "Service Receipt",
+          title: "Service Invoice",
           receiptNumber: receipt.receipt_number || payment.receipt_number || `SR-${payment.id}`,
           date: receipt.paid_at || payment.paid_at || new Date().toLocaleString("en-PH"),
           customer: receipt.customer_name || user?.name || "Customer",
@@ -270,7 +270,7 @@ const CustomerPayments = () => {
 
         const amount = Number(payment.total_amount || 0);
         printReceipt({
-          title: "Boarding Receipt",
+          title: "Boarding Invoice",
           receiptNumber: payment.receipt_number || `BRD-${payment.id}`,
           date: payment.paid_at || new Date().toLocaleString("en-PH"),
           customer: user?.name || "Customer",
@@ -299,7 +299,7 @@ const CustomerPayments = () => {
       }));
 
       printReceipt({
-        title: "Store Order Receipt",
+        title: "Sales Invoice",
         receiptNumber: receipt.receipt_number || `ORD-${payment.id}`,
         date: receipt.paid_at || new Date().toLocaleString("en-PH"),
         customer: receipt.customer_name || user?.name || "Customer",

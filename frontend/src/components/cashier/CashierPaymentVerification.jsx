@@ -5,7 +5,7 @@ import RowActionPopover from "../shared/RowActionPopover"
 import { useAuth } from "../../context/AuthContext";
 import { normalizeList } from "../../utils/normalizeList";
 import "./CashierPaymentVerification.css";
-import { showAlert, showSuccess, showError, showReasonPrompt, showConfirm } from "../../utils/alert.jsx";
+import { showAlert, showSuccess, showError, showReasonPrompt, showConfirm, PAYMENT_REJECT_REASONS } from "../../utils/alert.jsx";
 import { printReceipt as printReceiptUtil } from "../../utils/receiptPrinter";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { faRotateRight, faInbox, faXmark } from "@fortawesome/free-solid-svg-icons";
@@ -197,7 +197,7 @@ const CashierPaymentVerification = () => {
     }
 
     printReceiptUtil({
-      title: "Official Payment Receipt",
+      title: "Invoice",
       receiptNumber,
       date,
       cashier,
@@ -213,7 +213,7 @@ const CashierPaymentVerification = () => {
   };
 
   const rejectPayment = async (payment) => {
-    const cashier_remarks = await showReasonPrompt("Reason for rejecting this payment proof:", "Reject Payment");
+    const cashier_remarks = await showReasonPrompt("Reason for rejecting this payment proof:", "Reject Payment", "Reject", PAYMENT_REJECT_REASONS);
     if (!cashier_remarks) return;
 
     setActionLoading((prev) => ({ ...prev, [payment.id]: "reject" }));

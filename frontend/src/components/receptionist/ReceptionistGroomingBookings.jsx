@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { showConfirm, showReasonPrompt } from "../../utils/alert.jsx";
+import { showConfirm, showReasonPrompt, BOOKING_REJECT_REASONS } from "../../utils/alert.jsx";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import {
   faCalendarAlt,
@@ -302,8 +302,10 @@ const ReceptionistGroomingBookings = () => {
 
   const handleReject = async (id) => {
     const reason = await showReasonPrompt(
-      "Reject this grooming booking? Please provide a reason.",
-      "Reject Grooming Booking"
+      "Reject this grooming booking? Please select a reason.",
+      "Reject Grooming Booking",
+      "Reject",
+      BOOKING_REJECT_REASONS
     );
     if (!reason) return;
     await handleStatusChange(id, "rejected", reason);

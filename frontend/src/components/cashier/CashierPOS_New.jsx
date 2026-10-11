@@ -12,6 +12,7 @@ import {
 } from "../../utils/apiNormalize";
 import { showError } from "../../utils/alert.jsx";
 import { printReceipt } from "../../utils/receiptPrinter";
+import { STORE_INFO } from "../../utils/storeInfo";
 import PaymentApprovals from "./components/PaymentApprovals";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import {
@@ -527,7 +528,7 @@ const CashierPOS = ({ initialTab }) => {
     const r = completedReceipt;
     if (!r || !Array.isArray(r.items)) return;
     printReceipt({
-      title: "Official Cashier Receipt",
+      title: "Sales Invoice",
       receiptNumber: r.receipt_number || r.transaction_id,
       date: r.date,
       cashier: r.cashier_name || user?.name || "Cashier",
@@ -810,7 +811,10 @@ const CashierPOS = ({ initialTab }) => {
         </main>
       </div>
 
-      {/* ── Two-step Order Panel ── */}
+      {/* ── Two-step Order Panel ── hidden on the approvals tab so the
+          payment queue gets the full width (cart state lives here, so it
+          survives the unmount). */}
+      {activeTab !== "payment-approvals" && (
       <aside className="pos-order-panel">
 
         {/* Step indicator */}
@@ -1051,6 +1055,7 @@ const CashierPOS = ({ initialTab }) => {
           </div>
         )}
       </aside>
+      )}
       </div>
 
 
@@ -1073,8 +1078,10 @@ const CashierPOS = ({ initialTab }) => {
                 {/* ── Store header ── */}
                 <div className="pos-receipt-hd">
                   <div className="pos-receipt-name">PAWESOME RETREAT INC.</div>
-                  <div className="pos-receipt-addr">Aldana St., San Isidro Village, Las Piñas City</div>
-                  <div className="pos-receipt-sub">OFFICIAL CASHIER RECEIPT</div>
+                  {STORE_INFO.address.split("\n").map((line) => (
+                    <div className="pos-receipt-addr" key={line}>{line}</div>
+                  ))}
+                  <div className="pos-receipt-sub">SALES INVOICE</div>
                 </div>
 
                 {/* ── Transaction info ── */}

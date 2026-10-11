@@ -13,6 +13,7 @@ use App\Models\Grooming;
 use App\Models\Service;
 use App\Mail\AccountWelcomeMail;
 use App\Services\EmailDeliveryService;
+use App\Services\ServiceCatalog;
 use App\Services\WorkflowNotifier;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\JsonResponse;
@@ -278,6 +279,16 @@ class WalkInController extends Controller
                     ]);
                     $bookingType = 'appointment';
                 } elseif ($serviceType === 'grooming') {
+                    $groomingPrice = ServiceCatalog::priceFor(
+                        $bookingData['service_name'] ?? null,
+                        'grooming'
+                    );
+
+                    if ($groomingPrice > 0) {
+                        $serviceRequest->price = $groomingPrice;
+                        $serviceRequest->save();
+                    }
+
                     $bookingRecord = Grooming::create([
                         'service_request_id' => $serviceRequest->id,
                         'customer_id' => $customerId,
@@ -285,12 +296,12 @@ class WalkInController extends Controller
                         'service' => $bookingData['service_name'],
                         'appointment_date' => $bookingData['request_date'],
                         'appointment_time' => $bookingData['request_time'] ?? null,
-                        'amount' => 0,
-                        'base_amount' => 0,
-                        'total_amount' => 0,
-                        'balance_due' => 0,
+                        'amount' => $groomingPrice,
+                        'base_amount' => $groomingPrice,
+                        'total_amount' => $groomingPrice,
+                        'balance_due' => $groomingPrice,
                         'status' => 'pending',
-                        'payment_status' => 'pending',
+                        'payment_status' => 'unpaid',
                         'notes' => $bookingData['grooming_instructions'] ?? null,
                     ]);
                     $bookingType = 'grooming';

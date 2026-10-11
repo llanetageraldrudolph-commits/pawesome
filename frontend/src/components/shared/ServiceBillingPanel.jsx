@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import {
   faPlus,
@@ -40,6 +40,11 @@ const ServiceBillingPanel = ({ serviceType, serviceId, petId, onBillingUpdate })
     message: ""
   });
 
+  const onBillingUpdateRef = useRef(onBillingUpdate);
+  useEffect(() => {
+    onBillingUpdateRef.current = onBillingUpdate;
+  }, [onBillingUpdate]);
+
   // Common service icons
   const getServiceIcon = (itemType) => {
     const icons = {
@@ -59,7 +64,7 @@ const ServiceBillingPanel = ({ serviceType, serviceId, petId, onBillingUpdate })
         setBillingItems(response.billing.items || []);
         setBillingSummary(response.billing);
         setCompletionStatus(response.completion_status);
-        onBillingUpdate?.(response.billing, response.completion_status);
+        onBillingUpdateRef.current?.(response.billing, response.completion_status);
       }
     } catch (error) {
       console.error("Failed to fetch billing data:", error);
@@ -67,7 +72,7 @@ const ServiceBillingPanel = ({ serviceType, serviceId, petId, onBillingUpdate })
     } finally {
       setLoading(false);
     }
-  }, [serviceType, serviceId, onBillingUpdate]);
+  }, [serviceType, serviceId]);
 
   // Fetch billing data
   useEffect(() => {

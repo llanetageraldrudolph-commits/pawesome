@@ -188,7 +188,7 @@ class TransactionAtomicityTest extends TestCase
         $this->assertSame(0, (int) $item->fresh()->is_paid, 'billing item must stay unpaid');
     }
 
-    public function test_rejected_payment_cannot_become_paid(): void
+    public function test_rejected_payment_can_be_settled_by_verification(): void
     {
         $boarding = $this->pendingBoarding();
 
@@ -197,11 +197,13 @@ class TransactionAtomicityTest extends TestCase
         ])->assertOk();
         $this->assertSame('rejected', $boarding->fresh()->payment_status);
 
+        // A rejected online proof can still be settled at the desk —
+        // reject → resubmit/settle → verify is the supported recovery path.
         $this->as('cashier')->postJson("/api/cashier/payment-requests/{$boarding->id}/verify", [
             'type' => 'boarding', 'reference_number' => 'REF123456',
-        ])->assertStatus(422);
-        $this->assertSame('rejected', $boarding->fresh()->payment_status);
-        $this->assertNull($boarding->fresh()->receipt_number);
+        ])->assertOk();
+        $this->assertSame('paid', $boarding->fresh()->payment_status);
+        $this->assertNotNull($boarding->fresh()->receipt_number);
     }
 
     public function test_customer_order_approval_is_disabled_without_changing_stock_or_order_data(): void

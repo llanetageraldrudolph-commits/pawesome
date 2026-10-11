@@ -17,6 +17,7 @@ import {
 } from "@fortawesome/free-solid-svg-icons";
 import { apiRequest } from "../../../api/client";
 import DatePickerInput from "../../shared/DatePickerInput";
+import BookingReviewModal from "../../shared/BookingReviewModal";
 import { formatDateOnly, parseDateOnly } from "../../../utils/date";
 import {
   getBreedOptions,
@@ -41,6 +42,7 @@ const WalkInBookingModal = ({ serviceType, onClose, onSuccess }) => {
   const [filteredCustomers, setFilteredCustomers] = useState([]);
   const [selectedCustomer, setSelectedCustomer] = useState(null);
   const [selectedPet, setSelectedPet] = useState(null);
+  const [reviewOpen, setReviewOpen] = useState(false);
 
   // New customer form
   const [customerForm, setCustomerForm] = useState({
@@ -309,8 +311,8 @@ const WalkInBookingModal = ({ serviceType, onClose, onSuccess }) => {
     return null;
   };
 
-  // Submit walk-in booking
-  const handleSubmit = async () => {
+  // Final step validates, then opens the review modal — actual submit is confirmBooking
+  const handleSubmit = () => {
     const error = validateBookingForm();
     if (error) {
       setError(error);
@@ -335,6 +337,10 @@ const WalkInBookingModal = ({ serviceType, onClose, onSuccess }) => {
       return;
     }
 
+    setReviewOpen(true);
+  };
+
+  const confirmBooking = async () => {
     try {
       setLoading(true);
       setError("");
@@ -388,10 +394,11 @@ const WalkInBookingModal = ({ serviceType, onClose, onSuccess }) => {
         body: JSON.stringify(payload),
       });
 
-      const message = customerMode === "new" 
+      const message = customerMode === "new"
         ? `Walk-in booking created successfully. New account created with email: ${customerForm.email} and default password: Password123!`
         : "Walk-in booking created successfully.";
-      
+
+      setReviewOpen(false);
       onSuccess(message);
     } catch (err) {
       setError(err.message || "Failed to create walk-in booking. Please try again.");
@@ -1099,7 +1106,7 @@ const WalkInBookingModal = ({ serviceType, onClose, onSuccess }) => {
             </button>
           )}
 
-          {step < 4 ? (
+          {step < (customerMode === "new" ? 4 : 3) ? (
             <button
               type="button"
               className="primary-btn"
@@ -1128,6 +1135,52 @@ const WalkInBookingModal = ({ serviceType, onClose, onSuccess }) => {
           )}
         </div>
       </div>
+
+      <BookingReviewModal
+        open={reviewOpen}
+        onClose={() => setReviewOpen(false)}
+        onConfirm={confirmBooking}
+        loading={loading}
+        badge={config.title}
+        pet={(() => {
+          const p = customerMode === "existing" ? selectedPet : petForm;
+          if (!p?.name) return null;
+          return {
+            name: p.name,
+            species: p.species,
+            breed: customerMode === "new" && isManualBreedRequired(petForm.breed)
+              ? petForm.breed_manual.trim()
+              : p.breed,
+          };
+        })()}
+        details={(() => {
+          const room = hotelRooms.find((r) => String(r.id) === String(bookingForm.room_id));
+          const vet = veterinarians.find((v) => String(v.id) === String(bookingForm.veterinarian_id));
+          return [
+            { label: "Customer", value: customerMode === "existing"
+                ? selectedCustomer?.name
+                : `${customerForm.first_name} ${customerForm.last_name}`.trim() + " (new account)" },
+            { label: "Service", value: serviceType === "hotel"
+                ? `Hotel Boarding${bookingForm.room_type ? ` (${bookingForm.room_type})` : ""}`
+                : bookingForm.service_name },
+            { label: "Date", value: bookingForm.request_date && parseDateOnly(bookingForm.request_date)
+                ?.toLocaleDateString("en-PH", { weekday: "short", month: "short", day: "numeric", year: "numeric" }) },
+            bookingForm.request_time ? { label: "Time", value: bookingForm.request_time } : null,
+            room ? { label: "Room", value: `${room.name} (${room.type})` } : null,
+            vet ? { label: "Veterinarian", value: vet.name } : null,
+            serviceType === "veterinary" ? { label: "Urgency", value: bookingForm.urgency } : null,
+            serviceType === "veterinary" ? { label: "Reason", value: bookingForm.reason } : null,
+            bookingForm.symptoms ? { label: "Symptoms", value: bookingForm.symptoms } : null,
+            bookingForm.special_requests ? { label: "Special requests", value: bookingForm.special_requests } : null,
+            bookingForm.grooming_instructions ? { label: "Instructions", value: bookingForm.grooming_instructions } : null,
+          ].filter((d) => d && d.value);
+        })()}
+        pricing={serviceType === "hotel" && bookingForm.rate_per_day > 0 ? {
+          rows: [{ label: "Daily rate", value: `₱${Number(bookingForm.rate_per_day).toLocaleString("en-PH", { minimumFractionDigits: 2 })}` }],
+          total: `₱${Number(bookingForm.rate_per_day).toLocaleString("en-PH", { minimumFractionDigits: 2 })}/day`,
+        } : null}
+        notes={bookingForm.notes}
+      />
     </div>
   );
 };

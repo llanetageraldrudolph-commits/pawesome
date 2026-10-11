@@ -10,6 +10,7 @@ import { useAuth } from "../../context/AuthContext";
 import { formatDateOnly, parseDateOnly } from "../../utils/date";
 import { saveDraft, saveServiceIntent, getDraft, clearDraft } from "../../utils/preBookingDraft";
 import { showSuccess, showError } from "../../utils/alert.jsx";
+import BookingReviewModal from "../shared/BookingReviewModal";
 
 const SERVICE_CONFIG = {
   hotel: { title: "Book Pet Hotel", icon: faHotel, accent: "hotel-accent" },
@@ -50,7 +51,7 @@ const getRoomTypeKey = (room) => {
 };
 
 const getInitialForm = (serviceType) => {
-  const base = { customer_name: "", customer_email: "", pet_name: "", pet_type: "" };
+  const base = { customer_name: "", customer_email: "", pet_id: "", pet_name: "", pet_type: "" };
   if (serviceType === "hotel") return { ...base, check_in_date: "", preferred_time: "", room_type: "", special_care_instructions: "" };
   if (serviceType === "grooming") return { ...base, grooming_service_type: "", preferred_date: "", preferred_time: "", special_grooming_instructions: "" };
   return { ...base, veterinary_service_type: "", preferred_date: "", preferred_time: "", main_reason_for_visit: "", flu_symptoms: "", observed_issues: "", appetite_condition: "", energy_level: "", symptom_duration: "", medications_taken: "", recent_exposure: "", urgency_level: "" };
@@ -65,6 +66,7 @@ const ServiceBookingModal = ({ serviceType, onClose }) => {
   const config = SERVICE_CONFIG[serviceType];
   const [formData, setFormData] = useState(() => getInitialForm(serviceType));
   const [loading, setLoading] = useState(false);
+  const [reviewOpen, setReviewOpen] = useState(false);
   const [availabilityLoading, setAvailabilityLoading] = useState(false);
   const [availableTimeSlots, setAvailableTimeSlots] = useState([]);
   const [hotelAvailabilityLoading, setHotelAvailabilityLoading] = useState(false);
@@ -72,12 +74,49 @@ const ServiceBookingModal = ({ serviceType, onClose }) => {
   const [hotelAvailabilityError, setHotelAvailabilityError] = useState("");
   const [showHealthInfo, setShowHealthInfo] = useState(false);
   const [errors, setErrors] = useState({});
+  const [pets, setPets] = useState([]);
 
   useEffect(() => {
     const draft = getDraft();
     if (draft?.service_type !== serviceType || !draft.form_data) return;
     setFormData((prev) => ({ ...prev, ...draft.form_data }));
   }, [serviceType]);
+
+  // Logged-in customers book against their registered pets — no typed names.
+  useEffect(() => {
+    if (!canBook) return;
+    let cancelled = false;
+    apiRequest("/customer/pets")
+      .then((data) => {
+        if (cancelled) return;
+        const list = Array.isArray(data) ? data : data?.pets || data?.data || [];
+        setPets(Array.isArray(list) ? list : []);
+      })
+      .catch(() => { if (!cancelled) setPets([]); });
+    return () => { cancelled = true; };
+  }, [canBook]);
+
+  // Once pets load, resolve a draft's pet hint (name/species) to a real pet.
+  useEffect(() => {
+    if (pets.length === 0 || formData.pet_id) return;
+    if (!formData.pet_name && !formData.pet_type) return;
+
+    const name = (formData.pet_name || "").toLowerCase();
+    const species = (formData.pet_type || "").toLowerCase();
+    const byName = name ? pets.filter((p) => (p.name || "").toLowerCase() === name) : [];
+    const bySpecies = species
+      ? pets.filter((p) => (p.species || p.type || "").toLowerCase() === species)
+      : [];
+    const pet = byName.length === 1 ? byName[0] : bySpecies.length === 1 ? bySpecies[0] : null;
+    if (!pet) return;
+
+    setFormData((prev) => ({
+      ...prev,
+      pet_id: pet.id,
+      pet_name: pet.name,
+      pet_type: pet.species || pet.type || "",
+    }));
+  }, [pets, formData.pet_id, formData.pet_name, formData.pet_type]);
 
   useEffect(() => {
     if (isCustomer && user?.name) {
@@ -162,6 +201,17 @@ const ServiceBookingModal = ({ serviceType, onClose }) => {
 
   const handleChange = (e) => {
     const { name, value } = e.target;
+    if (name === "pet_id") {
+      const pet = pets.find((item) => String(item.id) === String(value));
+      setFormData((prev) => ({
+        ...prev,
+        pet_id: value,
+        pet_name: pet?.name || "",
+        pet_type: pet?.species || pet?.type || "",
+      }));
+      setErrors((prev) => ({ ...prev, pet_id: "" }));
+      return;
+    }
     setFormData((prev) => ({
       ...prev,
       [name]: value,
@@ -182,8 +232,11 @@ const ServiceBookingModal = ({ serviceType, onClose }) => {
     const ne = {};
     if (!formData.customer_name.trim()) ne.customer_name = "Customer name is required.";
     if (!formData.customer_email.trim()) { ne.customer_email = "Email is required."; } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(formData.customer_email)) { ne.customer_email = "Enter a valid email address."; }
-    if (!formData.pet_name.trim()) ne.pet_name = "Pet name is required.";
-    if (!formData.pet_type.trim()) ne.pet_type = "Pet type is required.";
+    if (canBook) {
+      if (!formData.pet_id) ne.pet_id = "Select one of your registered pets.";
+    } else if (!formData.pet_type.trim()) {
+      ne.pet_type = "Pet type is required.";
+    }
     if (serviceType === "hotel") {
       if (!formData.check_in_date) ne.check_in_date = "Stay date is required.";
       else if (canBook) {
@@ -211,7 +264,8 @@ const ServiceBookingModal = ({ serviceType, onClose }) => {
   };
 
   const buildPayload = useCallback(() => {
-    const base = { customer_name: formData.customer_name.trim(), customer_email: formData.customer_email.trim(), pet_name: formData.pet_name.trim(), pet_type: formData.pet_type.trim() };
+    const selectedPet = pets.find((p) => String(p.id) === String(formData.pet_id));
+    const base = { customer_name: formData.customer_name.trim(), customer_email: formData.customer_email.trim(), pet_id: selectedPet?.id || formData.pet_id, pet_name: selectedPet?.name || "", pet_type: selectedPet?.species || selectedPet?.type || formData.pet_type.trim() };
     if (serviceType === "hotel") return { ...base, request_type: "hotel", service_name: "Pet Hotel", requested_date: formData.check_in_date, requested_time: formData.preferred_time, check_in_date: formData.check_in_date, check_out_date: formData.check_in_date, room_type: formData.room_type, notes: formData.special_care_instructions || "", special_request: formData.special_care_instructions || "" };
     if (serviceType === "grooming") return { ...base, request_type: "grooming", service_name: formData.grooming_service_type, requested_date: formData.preferred_date, requested_time: formData.preferred_time, notes: formData.special_grooming_instructions || "", special_request: formData.special_grooming_instructions || "" };
     const healthParts = [];
@@ -245,11 +299,15 @@ const ServiceBookingModal = ({ serviceType, onClose }) => {
       return;
     }
 
+    setReviewOpen(true);
+  };
+
+  const confirmBooking = async () => {
     const payload = buildPayload();
     try {
       setLoading(true);
       const data = await apiRequest("/customer/requests", { method: "POST", body: JSON.stringify(payload) });
-      if (data.success) { clearDraft(); showSuccess("Booking request submitted successfully. Please wait for receptionist approval."); onClose(); } else { showError(data.message || "Failed to submit request."); }
+      if (data.success) { clearDraft(); setReviewOpen(false); showSuccess("Booking request submitted successfully. Please wait for receptionist approval."); onClose(); } else { showError(data.message || "Failed to submit request."); }
     } catch (error) {
       const message = error.response?.data?.message || error.response?.data?.error || error.message || "Server error while submitting booking request.";
       showError(message);
@@ -273,20 +331,39 @@ const ServiceBookingModal = ({ serviceType, onClose }) => {
         </label>
       </div>
       <div className="svc-form-row">
-        <label className="svc-form-group">
-          <span><FontAwesomeIcon icon={faPaw} /> Pet Name *</span>
-          <input type="text" name="pet_name" value={formData.pet_name} onChange={handleChange} placeholder="e.g., Buddy" className={errors.pet_name ? "has-error" : ""} />
-          {fe("pet_name")}
-        </label>
-        <label className="svc-form-group">
-          <span><FontAwesomeIcon icon={faPaw} /> Pet Type *</span>
-          <select name="pet_type" value={formData.pet_type} onChange={handleChange} className={errors.pet_type ? "has-error" : ""}>
-            <option value="">Select pet type</option>
-            <option value="Cat">Cat</option>
-            <option value="Dog">Dog</option>
-          </select>
-          {fe("pet_type")}
-        </label>
+        {canBook ? (
+          <label className="svc-form-group">
+            <span><FontAwesomeIcon icon={faPaw} /> Pet *</span>
+            <select name="pet_id" value={formData.pet_id} onChange={handleChange} className={errors.pet_id ? "has-error" : ""}>
+              <option value="">Select your pet</option>
+              {pets.map((pet) => (
+                <option key={pet.id} value={pet.id}>
+                  {pet.name} — {pet.species || pet.type || "Pet"}{pet.breed ? ` (${pet.breed})` : ""}
+                </option>
+              ))}
+            </select>
+            {fe("pet_id")}
+            {pets.length === 0 && (
+              <span className="svc-field-hint">No registered pets yet — add one under My Pets before booking.</span>
+            )}
+          </label>
+        ) : (
+          <>
+            <label className="svc-form-group">
+              <span><FontAwesomeIcon icon={faPaw} /> Pet Type *</span>
+              <select name="pet_type" value={formData.pet_type} onChange={handleChange} className={errors.pet_type ? "has-error" : ""}>
+                <option value="">Select pet type</option>
+                <option value="Cat">Cat</option>
+                <option value="Dog">Dog</option>
+              </select>
+              {fe("pet_type")}
+            </label>
+            <label className="svc-form-group">
+              <span><FontAwesomeIcon icon={faPaw} /> Pet</span>
+              <input type="text" value="Sign in to select your registered pet" disabled readOnly />
+            </label>
+          </>
+        )}
       </div>
     </>
   );
@@ -467,6 +544,38 @@ const ServiceBookingModal = ({ serviceType, onClose }) => {
           </div>
         </form>
       </div>
+
+      <BookingReviewModal
+        open={reviewOpen}
+        onClose={() => setReviewOpen(false)}
+        onConfirm={confirmBooking}
+        loading={loading}
+        badge={config.title}
+        pet={(() => {
+          const p = pets.find((pet) => String(pet.id) === String(formData.pet_id));
+          return p ? { name: p.name, species: p.species || p.type, breed: p.breed } : null;
+        })()}
+        details={[
+          { label: "Service", value: serviceType === "grooming" ? formData.grooming_service_type : formData.veterinary_service_type },
+          { label: "Date", value: formData.preferred_date && new Date(`${formData.preferred_date}T00:00:00`).toLocaleDateString("en-PH", { weekday: "short", month: "short", day: "numeric", year: "numeric" }) },
+          { label: "Time", value: formData.preferred_time },
+        ]}
+        notes={
+          serviceType === "grooming"
+            ? formData.special_grooming_instructions
+            : [
+                formData.main_reason_for_visit,
+                formData.flu_symptoms && `Flu-like symptoms: ${formData.flu_symptoms}`,
+                formData.observed_issues && `Observed issues: ${formData.observed_issues}`,
+                formData.appetite_condition && `Appetite: ${formData.appetite_condition}`,
+                formData.energy_level && `Energy: ${formData.energy_level}`,
+                formData.symptom_duration && `Duration: ${formData.symptom_duration}`,
+                formData.medications_taken && `Medications: ${formData.medications_taken}`,
+                formData.recent_exposure && `Recent exposure: ${formData.recent_exposure}`,
+                formData.urgency_level && `Urgency: ${formData.urgency_level}`,
+              ].filter(Boolean).join("\n")
+        }
+      />
     </div>
   );
 };

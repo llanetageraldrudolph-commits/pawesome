@@ -26,7 +26,8 @@ import {
 } from "@fortawesome/free-solid-svg-icons";
 import { showSuccess, showError, showWarning } from "../../../utils/alert.jsx";
 import { printReceipt } from "../../../utils/receiptPrinter";
-import { usePaymentApprovals } from "../hooks/usePaymentApprovals.jsx";
+import { STORE_INFO, computeVatBreakdown } from "../../../utils/storeInfo";
+import { usePaymentApprovals, paymentKey } from "../hooks/usePaymentApprovals.jsx";
 import { useAuth } from "../../../context/AuthContext";
 import "./PaymentApprovals.css";
 
@@ -42,7 +43,7 @@ const BILL_PRESETS = [50, 100, 200, 500, 1000];
 
 const getMethodConfig = (method) => {
   const key = (method || "").toLowerCase();
-  return METHOD_CONFIG[key] || { label: method || "—", color: "#64748b", bg: "#f1f5f9", icon: faWallet };
+  return METHOD_CONFIG[key] || METHOD_CONFIG.counter;
 };
 
 const getTypeIcon = (type) => {
@@ -345,7 +346,7 @@ const PaymentApprovals = () => {
             <label className="pa-bulk-checkbox">
               <input
                 type="checkbox"
-                checked={filteredRequests.every(r => selectedIds.includes(r.id))}
+                checked={filteredRequests.every(r => selectedIds.includes(paymentKey(r)))}
                 onChange={selectAll}
               />
               <span>{selectedIds.length} selected</span>
@@ -401,15 +402,16 @@ const PaymentApprovals = () => {
             const service       = payment.service_name || payment.service?.name || payment.order_name || "-";
             const amount        = Number(payment.amount || payment.total_amount || 0).toLocaleString("en-PH");
             const hasProof      = !!payment.proof_url;
-            const isVerifyLoading = actionLoading === `${payment.id}-verify`;
-            const isRejectLoading = actionLoading === `${payment.id}-reject`;
+            const pKey          = paymentKey(payment);
+            const isVerifyLoading = actionLoading === `${pKey}-verify`;
+            const isRejectLoading = actionLoading === `${pKey}-reject`;
             const methodCfg     = getMethodConfig(payment.payment_method);
             const payDate       = payment.request_date || payment.date || payment.created_at;
 
             return (
               <div
-                key={payment.id}
-                className={`pa-card${selectedIds.includes(payment.id) ? " pa-card-selected" : ""}`}
+                key={pKey}
+                className={`pa-card${selectedIds.includes(pKey) ? " pa-card-selected" : ""}`}
               >
                 <div className="pa-card-accent" style={{ background: methodCfg.color }} />
 
@@ -417,8 +419,8 @@ const PaymentApprovals = () => {
                   <label className="pa-checkbox">
                     <input
                       type="checkbox"
-                      checked={selectedIds.includes(payment.id)}
-                      onChange={() => toggleSelection(payment.id)}
+                      checked={selectedIds.includes(pKey)}
+                      onChange={() => toggleSelection(pKey)}
                     />
                     <span className="pa-checkmark" />
                   </label>
@@ -457,17 +459,17 @@ const PaymentApprovals = () => {
                   </div>
                   <div className="pa-amount-section">
                     <span className="pa-amount">₱{amount}</span>
+                    {payment.payment_reference && (
+                      <div className="pa-card-reference">
+                        Customer ref: <code>{payment.payment_reference}</code>
+                      </div>
+                    )}
                     {hasProof && (
                       <button className="pa-proof-btn" onClick={() => openProof(payment.proof_url, payment)}>
                         <FontAwesomeIcon icon={faPaperclip} /> View Proof
                       </button>
                     )}
                   </div>
-                  {payment.payment_reference && (
-                    <div className="pa-card-reference">
-                      Customer ref: <code>{payment.payment_reference}</code>
-                    </div>
-                  )}
                 </div>
 
                 <div className="pa-card-actions">
@@ -480,15 +482,19 @@ const PaymentApprovals = () => {
                       ? <><FontAwesomeIcon icon={faSpinner} spin /> Verifying…</>
                       : <><FontAwesomeIcon icon={faCheck} /> {isCashMethod(payment.payment_method) ? "Collect Cash" : "Verify"}</>}
                   </button>
-                  <button
-                    className="pa-btn-reject"
-                    onClick={() => rejectPayment(payment)}
-                    disabled={isVerifyLoading || isRejectLoading}
-                  >
-                    {isRejectLoading
-                      ? <><FontAwesomeIcon icon={faSpinner} spin /> Rejecting…</>
-                      : <><FontAwesomeIcon icon={faXmark} /> Reject</>}
-                  </button>
+                  {/* Only a pending submitted proof can be rejected — an
+                      'unpaid' record is awaiting payment, not approval. */}
+                  {(payment.payment_status || "").toLowerCase() === "pending" && (
+                    <button
+                      className="pa-btn-reject"
+                      onClick={() => rejectPayment(payment)}
+                      disabled={isVerifyLoading || isRejectLoading}
+                    >
+                      {isRejectLoading
+                        ? <><FontAwesomeIcon icon={faSpinner} spin /> Rejecting…</>
+                        : <><FontAwesomeIcon icon={faXmark} /> Reject</>}
+                    </button>
+                  )}
                 </div>
               </div>
             );
@@ -662,11 +668,13 @@ const PaymentApprovals = () => {
               )}
 
               <div className="pa-modal-footer">
-                <button className="pa-btn-reject" onClick={handleRejectFromModal} disabled={!!actionLoading}>
-                  {actionLoading === `${proofModal?.payment?.id}-reject`
-                    ? <><FontAwesomeIcon icon={faSpinner} spin /> Rejecting…</>
-                    : <><FontAwesomeIcon icon={faXmark} /> Reject</>}
-                </button>
+                {(proofModal.payment?.payment_status || "").toLowerCase() === "pending" && (
+                  <button className="pa-btn-reject" onClick={handleRejectFromModal} disabled={!!actionLoading}>
+                    {actionLoading === `${proofModal?.payment?.id}-reject`
+                      ? <><FontAwesomeIcon icon={faSpinner} spin /> Rejecting…</>
+                      : <><FontAwesomeIcon icon={faXmark} /> Reject</>}
+                  </button>
+                )}
                 <button
                   className="pa-btn-verify"
                   onClick={handleVerifyFromModal}
@@ -700,8 +708,10 @@ const PaymentApprovals = () => {
               {/* Store header */}
               <div className="pa-receipt-hd">
                 <div className="pa-receipt-name">PAWESOME RETREAT INC.</div>
-                <div className="pa-receipt-addr">Aldana St., San Isidro Village, Las Piñas City</div>
-                <div className="pa-receipt-sub">OFFICIAL RECEIPT</div>
+                {STORE_INFO.address.split("\n").map((line) => (
+                  <div className="pa-receipt-addr" key={line}>{line}</div>
+                ))}
+                <div className="pa-receipt-sub">INVOICE</div>
               </div>
 
               {/* Transaction info */}
@@ -717,7 +727,9 @@ const PaymentApprovals = () => {
               )}
               <div className="pa-receipt-row"><span>Verified by</span><span>{receiptData.verified_by || "Cashier"}</span></div>
 
-              {/* Total */}
+              {/* VAT-inclusive breakdown */}
+              <div className="pa-receipt-row"><span>Net Amount (ex-VAT)</span><span>₱{fmt(computeVatBreakdown(receiptData.amount).subtotalExVat)}</span></div>
+              <div className="pa-receipt-row"><span>VAT (12%)</span><span>₱{fmt(computeVatBreakdown(receiptData.amount).vatAmount)}</span></div>
               <div className="pa-receipt-total">
                 <span>TOTAL</span>
                 <span>₱{fmt(receiptData.amount)}</span>
@@ -744,7 +756,7 @@ const PaymentApprovals = () => {
                 onClick={() => {
                   const r = receiptData;
                   printReceipt({
-                    title: "Official Payment Receipt",
+                    title: "Invoice",
                     receiptNumber: r.receipt_number || "N/A",
                     date: r.paid_at ? new Date(r.paid_at).toLocaleString("en-PH") : new Date().toLocaleString("en-PH"),
                     cashier: user?.name || "Cashier",

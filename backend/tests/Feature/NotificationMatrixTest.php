@@ -66,10 +66,13 @@ class NotificationMatrixTest extends TestCase
     // ------------------------------------------------------------------
     public function test_service_request_submitted_notifies_receptionist_roles(): void
     {
+        $customer = Customer::factory()->create(['user_id' => $this->users['customer']->id]);
+        $pet = Pet::factory()->create(['customer_id' => $customer->id]);
+
         $this->as('customer')->postJson('/api/customer/requests', [
             'customer_name' => 'Test Customer',
             'customer_email' => $this->users['customer']->email,
-            'pet_name' => 'Bantay',
+            'pet_id' => $pet->id,
             'request_type' => 'grooming',
             'service_name' => 'Full Groom',
             'requested_date' => now()->addDays(2)->toDateString(),

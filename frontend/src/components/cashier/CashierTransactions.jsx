@@ -21,6 +21,7 @@ import "./CashierTransactions_Polished.css";
 import { formatCurrency } from "../../utils/currency";
 import { posApi } from "../../api/pos";
 import { printReceipt } from "../../utils/receiptPrinter";
+import { computeVatBreakdown } from "../../utils/storeInfo";
 import { useNavigate } from "react-router-dom";
 import RowActionPopover from "../shared/RowActionPopover";
 
@@ -136,7 +137,7 @@ const CashierTransactions = () => {
     const change = Number(transaction.change || transaction.change_amount || 0);
 
     printReceipt({
-      title: "Official Cashier Receipt",
+      title: "Sales Invoice",
       receiptNumber: transaction.transaction_number || String(transaction.id),
       date: `${transaction.date || ""} ${transaction.time || ""}`.trim() || new Date().toLocaleString("en-PH"),
       cashier: transaction.cashier_name || transaction.cashier || "Cashier",
@@ -436,6 +437,14 @@ const CashierTransactions = () => {
                     ))}
                   </tbody>
                   <tfoot>
+                    <tr>
+                      <td colSpan="2">Net Amount (ex-VAT):</td>
+                      <td>{formatCurrency(computeVatBreakdown(selectedTransaction.amount).subtotalExVat)}</td>
+                    </tr>
+                    <tr>
+                      <td colSpan="2">VAT (12%):</td>
+                      <td>{formatCurrency(Number(selectedTransaction.raw_data?.tax_amount ?? computeVatBreakdown(selectedTransaction.amount).vatAmount))}</td>
+                    </tr>
                     <tr className="total-row">
                       <td colSpan="2">Total:</td>
                       <td className="total-amount">{formatCurrency(selectedTransaction.amount)}</td>

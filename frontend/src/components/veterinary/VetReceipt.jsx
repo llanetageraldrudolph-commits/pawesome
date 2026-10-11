@@ -141,9 +141,11 @@ const VetReceipt = () => {
         {/* Store header */}
         <div className="vr-hd">
           <div className="vr-name">{STORE_INFO.name.toUpperCase()}</div>
-          <div className="vr-addr">{STORE_INFO.address}</div>
+          {STORE_INFO.address.split("\n").map((line) => (
+            <div className="vr-addr" key={line}>{line}</div>
+          ))}
           <div className="vr-email">{STORE_INFO.email}</div>
-          <div className="vr-title">OFFICIAL RECEIPT</div>
+          <div className="vr-title">SERVICE INVOICE</div>
         </div>
 
         {/* Transaction info */}

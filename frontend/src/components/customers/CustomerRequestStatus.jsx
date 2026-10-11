@@ -8,11 +8,10 @@ import {
   FaPaw,
   FaBan,
 } from "react-icons/fa";
-import Swal from "sweetalert2";
 import "./CustomerRequestStatus.css";
 import { apiRequest } from "../../api/client";
 import { normalizeList } from "../../utils/normalizeList";
-import { showSuccess, showError } from "../../utils/alert.jsx";
+import { showSuccess, showError, showReasonPrompt, CUSTOMER_CANCEL_REASONS } from "../../utils/alert.jsx";
 import { useAuth } from "../../context/AuthContext";
 import PaymentUploadModal from "../shared/PaymentUploadModal";
 import RowActionPopover from "../shared/RowActionPopover"
@@ -179,17 +178,12 @@ const CustomerRequestStatus = ({ embedded = false }) => {
   };
 
   const cancelBoarding = async (item) => {
-    const { value: reason } = await Swal.fire({
-      title: "Cancel Boarding Request",
-      input: "textarea",
-      inputLabel: "Cancellation Reason",
-      inputPlaceholder: "Please provide a reason for cancellation...",
-      inputValidator: (v) => !v ? "Cancellation reason is required" : undefined,
-      showCancelButton: true,
-      confirmButtonText: "Cancel Request",
-      cancelButtonText: "Keep Request",
-      confirmButtonColor: "#ef4444",
-    });
+    const reason = await showReasonPrompt(
+      "Please tell us why you're cancelling this boarding request.",
+      "Cancel Boarding Request",
+      "Cancel Request",
+      CUSTOMER_CANCEL_REASONS
+    );
     if (!reason) return;
     try {
       await apiRequest(

@@ -9,7 +9,8 @@ import {
   validateServiceCompatibility,
   getUnavailableServiceMessage,
 } from "../../config/petServiceRules";
-import { showAlert, showSuccess, showError, showConfirm } from "../../utils/alert.jsx";
+import { showAlert, showSuccess, showError, showConfirm, showReasonPrompt, CUSTOMER_CANCEL_REASONS } from "../../utils/alert.jsx";
+import BookingReviewModal from "../shared/BookingReviewModal";
 
 const GROOMING_TIME_SLOTS = Array.from({ length: 8 }, (_, index) => {
   const hour = index + 10;
@@ -101,8 +102,13 @@ const GroomingForm = () => {
     if (!draft || draft.service_type !== "grooming") return;
 
     const updates = {};
-    if (draft.form_data?.pet_name) updates.pet_name = draft.form_data.pet_name;
-    if (draft.form_data?.pet_type) {
+    if (draft.form_data?.pet_id && pets.some((p) => String(p.id) === String(draft.form_data.pet_id))) {
+      const pet = pets.find((p) => String(p.id) === String(draft.form_data.pet_id));
+      updates.pet_id = pet.id;
+      updates.pet_name = pet.name;
+    }
+    if (!updates.pet_id && draft.form_data?.pet_name) updates.pet_name = draft.form_data.pet_name;
+    if (!updates.pet_id && draft.form_data?.pet_type) {
       const pet = pets.find((p) => (p.species || p.type || "").toLowerCase() === (draft.form_data.pet_type || "").toLowerCase());
       if (pet) { updates.pet_id = pet.id; updates.pet_name = pet.name; }
     }
@@ -220,10 +226,11 @@ const GroomingForm = () => {
     }
   };
 
-  const handleSubmit = async (e) => {
+  const [reviewOpen, setReviewOpen] = useState(false);
+
+  const handleSubmit = (e) => {
     e.preventDefault();
 
-    // Check availability before submitting
     if (!formData.pet_id) {
       showAlert("Please select an active pet for this grooming appointment.");
       return;
@@ -234,12 +241,15 @@ const GroomingForm = () => {
       return;
     }
 
-    // Check availability before submitting
     if (!dateAvailable || !availableTimeSlots.some((slot) => slot.time === formData.request_time && slot.available)) {
       showAlert("That grooming time is no longer available. Please choose another available slot.");
       return;
     }
 
+    setReviewOpen(true);
+  };
+
+  const confirmBooking = async () => {
     try {
       setLoading(true);
 
@@ -249,6 +259,7 @@ const GroomingForm = () => {
       });
 
       if (data.success) {
+        setReviewOpen(false);
         showSuccess("Grooming appointment submitted! Waiting for receptionist approval.");
 
         setFormData({
@@ -282,16 +293,15 @@ const GroomingForm = () => {
   };
 
   const cancelRequest = async (item) => {
-    const confirmed = await showConfirm(
-      "Cancel this appointment?",
-      "This action cannot be undone.",
+    const reason = await showReasonPrompt(
+      "Cancel this appointment? Please select a reason — it will be recorded.",
+      "Cancel Appointment",
       "Yes, Cancel",
-      "Keep",
-      "warning"
+      CUSTOMER_CANCEL_REASONS
     );
-    if (!confirmed) return;
+    if (reason === null) return;
     try {
-      await apiRequest(`/customer/requests/${item.id}/cancel`, "PATCH");
+      await apiRequest(`/customer/requests/${item.id}/cancel`, "PATCH", { reason });
       showSuccess("Appointment cancelled.");
       fetchAppointments();
     } catch (err) {
@@ -513,6 +523,30 @@ const GroomingForm = () => {
           )}
         </div>
       )}
+
+      <BookingReviewModal
+        open={reviewOpen}
+        onClose={() => setReviewOpen(false)}
+        onConfirm={confirmBooking}
+        loading={loading}
+        badge="Grooming"
+        pet={selectedPet ? {
+          name: selectedPet.name,
+          species: selectedPet.species || selectedPet.type,
+          breed: selectedPet.breed,
+          age: petDisplayInfo?.age,
+        } : null}
+        details={[
+          { label: "Service", value: formData.service_name },
+          { label: "Date", value: formData.request_date && new Date(`${formData.request_date}T00:00:00`).toLocaleDateString("en-PH", { weekday: "short", month: "short", day: "numeric", year: "numeric" }) },
+          { label: "Time", value: formData.request_time },
+        ]}
+        pricing={formData.price !== "" ? {
+          rows: [{ label: formData.service_name || "Grooming service", value: `₱${Number(formData.price).toFixed(2)}` }],
+          total: `₱${Number(formData.price).toFixed(2)}`,
+        } : null}
+        notes={formData.notes}
+      />
     </section>
   );
 };

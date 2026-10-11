@@ -12,6 +12,7 @@ use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
 use App\Services\FileStorageService;
 use App\Services\WorkflowNotifier;
+use App\Support\EmailContent;
 use App\Models\ActivityLog;
 
 class CustomerStoreController extends Controller
@@ -541,6 +542,9 @@ class CustomerStoreController extends Controller
             ? DB::table('users')->where('id', $order->verified_by)->value('name')
             : null;
 
+        $totalAmount = (float) ($order->total_amount ?? 0);
+        $vatAmount = EmailContent::vatInclusivePortion($totalAmount);
+
         return response()->json([
             'receipt' => [
                 'order_id' => $order->id,
@@ -548,6 +552,9 @@ class CustomerStoreController extends Controller
                 'customer_name' => $order->customer_name,
                 'customer_email' => $order->customer_email,
                 'items' => $items,
+                'net_amount' => $vatAmount !== null ? round($totalAmount - $vatAmount, 2) : null,
+                'vat_amount' => $vatAmount,
+                'vat_rate' => 0.12,
                 'total_amount' => $order->total_amount,
                 'payment_method' => $order->payment_method,
                 'payment_reference' => $order->reference_number ?? $order->payment_reference ?? null,

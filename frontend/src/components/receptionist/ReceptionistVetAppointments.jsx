@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { showConfirm, showError, showWarning, showReasonPrompt } from "../../utils/alert.jsx";
+import { showConfirm, showError, showWarning, showReasonPrompt, STAFF_CANCEL_REASONS } from "../../utils/alert.jsx";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import {
   faStethoscope,
@@ -165,8 +165,10 @@ const VetAppointments = () => {
   // Cancel appointment
   const handleCancel = async (appointmentId) => {
     const reason = await showReasonPrompt(
-      "Cancel this appointment? Please provide a reason.",
-      "Cancel Appointment"
+      "Cancel this appointment? Please select a reason.",
+      "Cancel Appointment",
+      "Cancel Appointment",
+      STAFF_CANCEL_REASONS
     );
     if (!reason) return;
 
@@ -241,8 +243,10 @@ const VetAppointments = () => {
   const handleBulkCancel = async () => {
     const ids = Array.from(selectedIds);
     const reason = await showReasonPrompt(
-      `Cancel ${ids.length} selected appointment${ids.length > 1 ? "s" : ""}? Please provide a reason.`,
-      "Cancel Appointments"
+      `Cancel ${ids.length} selected appointment${ids.length > 1 ? "s" : ""}? Please select a reason.`,
+      "Cancel Appointments",
+      "Cancel Appointments",
+      STAFF_CANCEL_REASONS
     );
     if (!reason) return;
     setActionLoading(true);
